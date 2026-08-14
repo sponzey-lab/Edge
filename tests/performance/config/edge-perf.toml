@@ -1,0 +1,32 @@
+schema_version = 1
+
+[admin]
+bind = "127.0.0.1:9443"
+enabled = true
+
+[logging]
+mode = "product"
+
+[storage]
+data_dir = "/var/lib/sponzey-edge/data"
+
+[runtime]
+max_connections = 256
+max_inflight_payload_bytes = 33554432
+
+[[listeners]]
+name = "http"
+bind = "0.0.0.0:8080"
+protocol = "http"
+
+[[services]]
+name = "node-upstream"
+
+[[services.upstreams]]
+url = "http://node-upstream:3000"
+
+[[routes]]
+name = "edge-test-route"
+hosts = ["edge.test"]
+paths = ["/"]
+service = "node-upstream"

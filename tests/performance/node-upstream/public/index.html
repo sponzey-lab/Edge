@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sponzey Edge Test Upstream</title>
+  </head>
+  <body>
+    <main>
+      <h1>Test upstream status</h1>
+      <dl id="stats"></dl>
+    </main>
+    <script>
+      const target = document.querySelector("#stats");
+      const render = (snapshot) => {
+        target.replaceChildren(...Object.entries(snapshot).flatMap(([key, value]) => [
+          Object.assign(document.createElement("dt"), { textContent: key }),
+          Object.assign(document.createElement("dd"), { textContent: JSON.stringify(value) }),
+        ]));
+      };
+      fetch("/api/stats").then((response) => response.json()).then(render);
+    </script>
+  </body>
+</html>

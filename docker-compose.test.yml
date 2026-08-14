@@ -25,6 +25,56 @@ services:
       retries: 3
       start_period: 10s
 
+  edge-perf:
+    profiles: ["performance"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    volumes:
+      - ./tests/performance/config/edge-perf.toml:/etc/sponzey-edge/current.toml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -x /usr/local/bin/edge-proxy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: &performance_logging
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  node-upstream:
+    profiles: ["performance"]
+    image: node:22.14.0-bookworm-slim@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b
+    init: true
+    working_dir: /app
+    command: ["node", "src/server.mjs"]
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./tests/performance/node-upstream:/app:ro
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *performance_logging
+
+  load-generator:
+    profiles: ["performance"]
+    image: grafana/k6:0.57.0@sha256:70af91f86cd8e142e0544a4edaf79835a80033f71974b92edd5ac36fd4442a7b
+    network_mode: "service:edge-perf"
+    depends_on:
+      edge-perf:
+        condition: service_healthy
+    command: ["version"]
+    volumes:
+      - ./tests/performance/k6:/scripts:ro
+    logging: *performance_logging
+
 volumes:
   cargo-registry:
   cargo-git:
