@@ -6537,6 +6537,7 @@ pub mod snapshot_http {
                     max_inflight_payload_bytes: 128 * 1_024 * 1_024,
                     max_request_header_bytes: 16 * 1_024,
                     max_request_body_bytes: 1_024 * 1_024,
+                    upstream_read_timeout_ms: edge_domain::DEFAULT_UPSTREAM_READ_TIMEOUT_MS,
                     metrics: edge_domain::MetricsConfig::default(),
                 },
             }
@@ -9927,6 +9928,7 @@ mod tests {
                 max_inflight_payload_bytes: 128 * 1024 * 1024,
                 max_request_header_bytes: 16 * 1024,
                 max_request_body_bytes: 1024 * 1024,
+                upstream_read_timeout_ms: edge_domain::DEFAULT_UPSTREAM_READ_TIMEOUT_MS,
                 metrics: edge_domain::MetricsConfig::default(),
             },
         }
@@ -9997,6 +9999,7 @@ mod tests {
                 max_inflight_payload_bytes: 128 * 1024 * 1024,
                 max_request_header_bytes: 16 * 1024,
                 max_request_body_bytes: 1024 * 1024,
+                upstream_read_timeout_ms: edge_domain::DEFAULT_UPSTREAM_READ_TIMEOUT_MS,
                 metrics: edge_domain::MetricsConfig::default(),
             },
         }

@@ -13,6 +13,7 @@ data_dir = ".sponzey"
 [runtime]
 max_connections = 1024
 max_inflight_payload_bytes = 134217728
+upstream_read_timeout_ms = 30000
 
 [[listeners]]
 name = "http"

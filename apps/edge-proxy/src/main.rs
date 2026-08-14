@@ -1637,6 +1637,9 @@ fn resource_limits_for_snapshot(snapshot: &ConfigSnapshot) -> ResourceLimits {
         max_connections: snapshot.runtime.max_connections,
         max_request_header_bytes: snapshot.runtime.max_request_header_bytes,
         max_request_body_bytes: snapshot.runtime.max_request_body_bytes,
+        upstream_read_timeout: std::time::Duration::from_millis(
+            snapshot.runtime.upstream_read_timeout_ms,
+        ),
         ..ResourceLimits::default()
     }
 }
@@ -1729,6 +1732,10 @@ mod tests {
         assert_eq!(
             proxy.resource_policy.max_inflight_payload_bytes(),
             32 * 1024 * 1024
+        );
+        assert_eq!(
+            proxy.resource_limits.upstream_read_timeout,
+            std::time::Duration::from_millis(edge_domain::DEFAULT_UPSTREAM_READ_TIMEOUT_MS)
         );
     }
 
@@ -3996,6 +4003,7 @@ mod tests {
                 max_inflight_payload_bytes: 128 * 1024 * 1024,
                 max_request_header_bytes: 16 * 1024,
                 max_request_body_bytes: 1024 * 1024,
+                upstream_read_timeout_ms: edge_domain::DEFAULT_UPSTREAM_READ_TIMEOUT_MS,
                 metrics: edge_domain::MetricsConfig::default(),
             },
         }

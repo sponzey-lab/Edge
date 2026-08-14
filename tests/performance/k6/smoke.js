@@ -65,6 +65,12 @@ export function setup() {
   requireCheck(clientTimeout, {
     "slow upstream is an expected client timeout": (response) => response.status === 0,
   }, "client timeout");
+
+  sleep(0.15);
+  const upstreamTimeout = getExpected(`${httpBaseUrl}/delay/slow`, 504);
+  requireCheck(upstreamTimeout, {
+    "configured Edge upstream timeout returns 504": (response) => response.status === 504,
+  }, "upstream timeout");
 }
 
 export default function () {

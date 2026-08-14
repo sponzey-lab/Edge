@@ -1438,6 +1438,7 @@ pub struct RuntimeOptions {
     pub max_inflight_payload_bytes: usize,
     pub max_request_header_bytes: usize,
     pub max_request_body_bytes: usize,
+    pub upstream_read_timeout_ms: u64,
     pub metrics: MetricsConfig,
 }
 
@@ -1450,6 +1451,9 @@ pub const HARD_MAX_INFLIGHT_PAYLOAD_BYTES: usize = 512 * 1024 * 1024;
 pub const FIXED_REQUEST_HEADER_RESERVE_BYTES: usize = 16 * 1024;
 pub const FIXED_RESPONSE_BUFFER_RESERVE_BYTES: usize = 64 * 1024;
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_UPSTREAM_READ_TIMEOUT_MS: u64 = 30_000;
+pub const MIN_UPSTREAM_READ_TIMEOUT_MS: u64 = 10;
+pub const HARD_MAX_UPSTREAM_READ_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeResourcePolicy {
@@ -1512,6 +1516,39 @@ impl Default for RuntimeResourcePolicy {
         Self {
             max_connections: DEFAULT_MAX_CONNECTIONS,
             max_inflight_payload_bytes: DEFAULT_MAX_INFLIGHT_PAYLOAD_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeTimeoutPolicy {
+    upstream_read_timeout_ms: u64,
+}
+
+impl RuntimeTimeoutPolicy {
+    pub fn try_new(upstream_read_timeout_ms: u64) -> Result<Self, AppError> {
+        if !(MIN_UPSTREAM_READ_TIMEOUT_MS..=HARD_MAX_UPSTREAM_READ_TIMEOUT_MS)
+            .contains(&upstream_read_timeout_ms)
+        {
+            return Err(invalid_resource_policy(
+                "upstream read timeout is outside the supported range",
+            ));
+        }
+
+        Ok(Self {
+            upstream_read_timeout_ms,
+        })
+    }
+
+    pub fn upstream_read_timeout_ms(&self) -> u64 {
+        self.upstream_read_timeout_ms
+    }
+}
+
+impl Default for RuntimeTimeoutPolicy {
+    fn default() -> Self {
+        Self {
+            upstream_read_timeout_ms: DEFAULT_UPSTREAM_READ_TIMEOUT_MS,
         }
     }
 }
@@ -2228,6 +2265,7 @@ mod tests {
                 max_inflight_payload_bytes: DEFAULT_MAX_INFLIGHT_PAYLOAD_BYTES,
                 max_request_header_bytes: 16 * 1024,
                 max_request_body_bytes: 1024 * 1024,
+                upstream_read_timeout_ms: DEFAULT_UPSTREAM_READ_TIMEOUT_MS,
                 metrics: MetricsConfig::default(),
             },
         }
@@ -2258,6 +2296,31 @@ mod tests {
         assert_eq!(minimum.max_connections(), 1);
         assert_eq!(maximum.max_connections(), 4_096);
         assert_eq!(maximum.max_inflight_payload_bytes(), 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn runtime_timeout_policy_accepts_only_bounded_read_timeouts() {
+        assert_eq!(
+            RuntimeTimeoutPolicy::try_new(MIN_UPSTREAM_READ_TIMEOUT_MS)
+                .unwrap()
+                .upstream_read_timeout_ms(),
+            MIN_UPSTREAM_READ_TIMEOUT_MS
+        );
+        assert_eq!(
+            RuntimeTimeoutPolicy::try_new(HARD_MAX_UPSTREAM_READ_TIMEOUT_MS)
+                .unwrap()
+                .upstream_read_timeout_ms(),
+            HARD_MAX_UPSTREAM_READ_TIMEOUT_MS
+        );
+        for invalid in [
+            MIN_UPSTREAM_READ_TIMEOUT_MS - 1,
+            HARD_MAX_UPSTREAM_READ_TIMEOUT_MS + 1,
+        ] {
+            assert_eq!(
+                RuntimeTimeoutPolicy::try_new(invalid).unwrap_err().code,
+                ErrorCode::ConfigResourceLimitInvalid
+            );
+        }
     }
 
     #[test]

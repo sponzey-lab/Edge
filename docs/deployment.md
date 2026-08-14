@@ -222,16 +222,20 @@ import or set the current config revision.
 
 ## Runtime Resource Capacity
 
-`[runtime].max_connections` and `[runtime].max_inflight_payload_bytes` form one typed startup
-policy. The bootstrap boundary reads configuration and environment once, validates bounds before
-listener or revision effects, and passes an immutable active policy into the core. A changed
-resource policy is desired-but-restart-required; Admin status must not present it as active until a
-successful restart loads that revision.
+`[runtime].max_connections`, `[runtime].max_inflight_payload_bytes`, and
+`[runtime].upstream_read_timeout_ms` form one typed startup policy. The bootstrap boundary reads
+configuration and environment once, validates bounds before listener or revision effects, and
+passes an immutable active policy into the core. A changed resource policy is
+desired-but-restart-required; Admin status must not present it as active until a successful restart
+loads that revision.
 
 The default policy is 1,024 connections and 134,217,728 bytes of managed in-flight payload. The
 payload value is logical owner accounting for budgeted request, response, retry, TLS and WebSocket
 buffers, not a hard process RSS or kernel socket-memory limit. New admission can fail under pressure
 without terminating existing connections; writable drain, timeout and exact cleanup continue.
+The upstream read timeout defaults to 30 seconds (bounded to 10ms..=120 seconds) and returns 504
+when an upstream sends no response bytes in time. Set it from the canonical config only; it is not a
+request-time environment override.
 
 Capacity planning must preserve file-descriptor headroom for listeners, upstreams, Admin, logs and
 test tooling. Before promoting a changed release candidate, run the source-bound full profile on

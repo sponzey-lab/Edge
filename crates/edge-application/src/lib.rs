@@ -36,11 +36,11 @@ use edge_domain::{
     ConfigRevisionId, ConfigSnapshot, CoreCommand, ErrorCode, HealthCheckPolicy, HostMatch,
     HttpHealthCheckPolicy, Listener, ListenerId, ListenerProtocol, LoadBalancingPolicy, LogMode,
     MetricsConfig, PassiveHealthMode, PassiveHealthPolicy, PathMatch, ProxyHost, ProxyHostId,
-    RetryPolicy, Route, RouteId, RouteMatch, RuntimeOptions, RuntimeResourcePolicy, Service,
-    ServiceId, Upstream, UpstreamAdministrativeState, UpstreamEndpoint, UpstreamId, UpstreamScheme,
-    UpstreamTlsPolicy, ValidationError, DEFAULT_MAX_CONNECTIONS,
-    DEFAULT_MAX_INFLIGHT_PAYLOAD_BYTES, DEFAULT_MAX_REQUEST_BODY_BYTES,
-    FIXED_REQUEST_HEADER_RESERVE_BYTES,
+    RetryPolicy, Route, RouteId, RouteMatch, RuntimeOptions, RuntimeResourcePolicy,
+    RuntimeTimeoutPolicy, Service, ServiceId, Upstream, UpstreamAdministrativeState,
+    UpstreamEndpoint, UpstreamId, UpstreamScheme, UpstreamTlsPolicy, ValidationError,
+    DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_INFLIGHT_PAYLOAD_BYTES, DEFAULT_MAX_REQUEST_BODY_BYTES,
+    DEFAULT_UPSTREAM_READ_TIMEOUT_MS, FIXED_REQUEST_HEADER_RESERVE_BYTES,
 };
 use edge_ports::{
     AcmeClient, AcmeHttp01ChallengeRuntime, AcmeOrderRequest, AcmeOrderResult, AuditEvent,
@@ -311,6 +311,7 @@ struct MvpConfigDraft {
     log_mode: Option<LogMode>,
     max_connections: Option<usize>,
     max_inflight_payload_bytes: Option<usize>,
+    upstream_read_timeout_ms: Option<u64>,
     metrics_enabled: Option<bool>,
     metrics_bind: Option<String>,
     listeners: Vec<Listener>,
@@ -567,6 +568,9 @@ pub fn parse_mvp_config(
                 .unwrap_or(DEFAULT_MAX_INFLIGHT_PAYLOAD_BYTES),
             max_request_header_bytes: FIXED_REQUEST_HEADER_RESERVE_BYTES,
             max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
+            upstream_read_timeout_ms: draft
+                .upstream_read_timeout_ms
+                .unwrap_or(DEFAULT_UPSTREAM_READ_TIMEOUT_MS),
             metrics: MetricsConfig {
                 enabled: draft.metrics_enabled.unwrap_or(false),
                 bind: draft
@@ -695,8 +699,10 @@ pub fn render_mvp_config_snapshot(snapshot: &ConfigSnapshot) -> String {
     output.push_str(&format!("mode = \"{}\"\n\n", snapshot.log_mode.as_str()));
     output.push_str("[runtime]\n");
     output.push_str(&format!(
-        "max_connections = {}\nmax_inflight_payload_bytes = {}\n\n",
-        snapshot.runtime.max_connections, snapshot.runtime.max_inflight_payload_bytes
+        "max_connections = {}\nmax_inflight_payload_bytes = {}\nupstream_read_timeout_ms = {}\n\n",
+        snapshot.runtime.max_connections,
+        snapshot.runtime.max_inflight_payload_bytes,
+        snapshot.runtime.upstream_read_timeout_ms,
     ));
     if snapshot.runtime.metrics.enabled {
         output.push_str("[metrics]\n");
@@ -889,6 +895,9 @@ fn apply_mvp_config_value(
         }
         ("runtime", "max_inflight_payload_bytes") => {
             draft.max_inflight_payload_bytes = Some(parse_usize(value)?);
+        }
+        ("runtime", "upstream_read_timeout_ms") => {
+            draft.upstream_read_timeout_ms = Some(parse_u64(value)?);
         }
         ("metrics", "enabled") => draft.metrics_enabled = Some(parse_bool(value)?),
         ("metrics", "bind") => draft.metrics_bind = Some(parse_string(value)?),
@@ -1262,6 +1271,10 @@ impl ConfigValidator {
             snapshot.runtime.max_connections,
             snapshot.runtime.max_inflight_payload_bytes,
         ) {
+            errors.push(ValidationError::new(error.code, error.message));
+        }
+        if let Err(error) = RuntimeTimeoutPolicy::try_new(snapshot.runtime.upstream_read_timeout_ms)
+        {
             errors.push(ValidationError::new(error.code, error.message));
         }
         let mut listener_ids = BTreeSet::new();
@@ -1656,6 +1669,7 @@ fn restart_warnings(current: &ConfigSnapshot, next: &ConfigSnapshot) -> Vec<Stri
     }
     if current.runtime.max_connections != next.runtime.max_connections
         || current.runtime.max_inflight_payload_bytes != next.runtime.max_inflight_payload_bytes
+        || current.runtime.upstream_read_timeout_ms != next.runtime.upstream_read_timeout_ms
     {
         warnings.push("resource policy changes require process restart".to_string());
     }
@@ -3496,6 +3510,7 @@ mod tests {
                 max_inflight_payload_bytes: DEFAULT_MAX_INFLIGHT_PAYLOAD_BYTES,
                 max_request_header_bytes: 16 * 1024,
                 max_request_body_bytes: 1024 * 1024,
+                upstream_read_timeout_ms: DEFAULT_UPSTREAM_READ_TIMEOUT_MS,
                 metrics: edge_domain::MetricsConfig::default(),
             },
         }
@@ -3584,12 +3599,20 @@ mod tests {
             defaulted.snapshot.runtime.max_inflight_payload_bytes,
             edge_domain::DEFAULT_MAX_INFLIGHT_PAYLOAD_BYTES
         );
+        assert_eq!(
+            defaulted.snapshot.runtime.upstream_read_timeout_ms,
+            edge_domain::DEFAULT_UPSTREAM_READ_TIMEOUT_MS
+        );
 
         let explicit_source = source
             .replace("max_connections = 1024", "max_connections = 100")
             .replace(
                 "max_inflight_payload_bytes = 134217728",
                 "max_inflight_payload_bytes = 33554432",
+            )
+            .replace(
+                "upstream_read_timeout_ms = 30000",
+                "upstream_read_timeout_ms = 50",
             );
         let explicit =
             parse_mvp_config(&explicit_source, ConfigRevisionId::new("explicit")).unwrap();
@@ -3598,16 +3621,22 @@ mod tests {
             explicit.snapshot.runtime.max_inflight_payload_bytes,
             32 * 1024 * 1024
         );
+        assert_eq!(explicit.snapshot.runtime.upstream_read_timeout_ms, 50);
         assert!(ConfigValidator::default()
             .validate_source(&explicit)
             .is_valid());
 
         let rendered = render_mvp_config_snapshot(&explicit.snapshot);
         assert!(rendered.contains("max_inflight_payload_bytes = 33554432"));
+        assert!(rendered.contains("upstream_read_timeout_ms = 50"));
         let reparsed = parse_mvp_config(&rendered, ConfigRevisionId::new("reparsed")).unwrap();
         assert_eq!(
             reparsed.snapshot.runtime.max_inflight_payload_bytes,
             explicit.snapshot.runtime.max_inflight_payload_bytes
+        );
+        assert_eq!(
+            reparsed.snapshot.runtime.upstream_read_timeout_ms,
+            explicit.snapshot.runtime.upstream_read_timeout_ms
         );
     }
 
@@ -3638,6 +3667,23 @@ mod tests {
                 .errors
                 .iter()
                 .any(|error| { error.code == ErrorCode::ConfigResourceLimitInvalid }));
+        }
+    }
+
+    #[test]
+    fn runtime_timeout_policy_validation_rejects_invalid_bounds() {
+        let validator = ConfigValidator::default();
+        for invalid in [
+            edge_domain::MIN_UPSTREAM_READ_TIMEOUT_MS - 1,
+            edge_domain::HARD_MAX_UPSTREAM_READ_TIMEOUT_MS + 1,
+        ] {
+            let mut snapshot = valid_snapshot("invalid-timeout-policy");
+            snapshot.runtime.upstream_read_timeout_ms = invalid;
+            assert!(validator
+                .validate_snapshot(&snapshot)
+                .errors
+                .iter()
+                .any(|error| error.code == ErrorCode::ConfigResourceLimitInvalid));
         }
     }
 

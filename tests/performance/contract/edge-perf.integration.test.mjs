@@ -64,7 +64,7 @@ function rawHttpRequest(request) {
   );
 }
 
-test("release edge-perf proxies the fixed Host route to node-upstream", () => {
+test("release edge-perf proxies the fixed Host route to node-upstream", { concurrency: false }, () => {
   prepareRuntime();
   startPerformanceServices();
 
@@ -89,7 +89,7 @@ test("release edge-perf proxies the fixed Host route to node-upstream", () => {
   assert.equal(output, "200:sponzey-edge-small-payload-v1\n");
 });
 
-test("release edge-perf rejects malformed framing and oversized declared bodies before upstream use", () => {
+test("release edge-perf rejects malformed framing and oversized declared bodies before upstream use", { concurrency: false }, () => {
   prepareRuntime();
   startPerformanceServices();
 
@@ -112,7 +112,21 @@ test("release edge-perf rejects malformed framing and oversized declared bodies 
   assert.match(oversized, /^HTTP\/1\.1 413 Payload Too Large\r?\n/);
 });
 
-test("release edge-perf terminates trusted TLS and rejects the wrong SNI", () => {
+test("release edge-perf maps the configured upstream read timeout to 504", { concurrency: false }, () => {
+  prepareRuntime();
+  startPerformanceServices();
+  const output = compose("exec", "-T", "node-upstream", "node", "-e", [
+    "const http = require('node:http');",
+    "const request = http.get({host:'172.30.0.2',port:8080,path:'/delay/slow',headers:{Host:'edge.test'}}, response => {",
+    "response.resume(); response.on('end', () => process.stdout.write(String(response.statusCode)));",
+    "});",
+    "request.setTimeout(1000, () => { process.stderr.write('client timeout'); process.exitCode = 1; request.destroy(); });",
+    "request.on('error', error => { process.stderr.write(error.message); process.exitCode = 1; });",
+  ].join(""));
+  assert.equal(output, "504");
+});
+
+test("release edge-perf terminates trusted TLS and rejects the wrong SNI", { concurrency: false }, () => {
   prepareRuntime();
   startPerformanceServices();
 
@@ -139,7 +153,7 @@ test("release edge-perf terminates trusted TLS and rejects the wrong SNI", () =>
   assert.match(rejected, /^(ECONNRESET|ERR_TLS_CERT_ALTNAME_INVALID)$/);
 });
 
-test("load-generator performs Admin setup, login, validate, apply, and rollback over Edge loopback", () => {
+test("load-generator performs Admin setup, login, validate, apply, and rollback over Edge loopback", { concurrency: false }, () => {
   prepareRuntime();
   startPerformanceServices();
 

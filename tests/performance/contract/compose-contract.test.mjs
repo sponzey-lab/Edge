@@ -104,6 +104,7 @@ test("edge-perf mounts a non-secret HTTP route config with a stable literal upst
   assert.match(routeConfig, /hosts = \["edge\.test"\]/);
   assert.match(routeConfig, /priority = 20/);
   assert.match(routeConfig, /exact_paths = \["\/routing\/exact\/route-check"\]/);
+  assert.match(routeConfig, /upstream_read_timeout_ms = 50/);
   assert.match(routeConfig, /bind = "0\.0\.0\.0:8080"/);
   assert.match(routeConfig, /bind = "0\.0\.0\.0:8443"/);
   assert.match(routeConfig, /protocol = "https"/);

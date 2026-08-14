@@ -22,6 +22,8 @@ test("k6 smoke workload targets Edge only and keeps expected failures explicit",
   assert.match(source, /timeout: "10ms"/);
   assert.match(source, /expectedStatuses\(0\)/);
   assert.match(source, /slow upstream is an expected client timeout/);
+  assert.match(source, /configured Edge upstream timeout returns 504/);
+  assert.match(source, /getExpected\(`\$\{httpBaseUrl\}\/delay\/slow`, 504\)/);
   assert.match(source, /\/inspect\/headers/);
   assert.match(source, /\/inspect\/body/);
   assert.match(source, /X-Forwarded-For/);

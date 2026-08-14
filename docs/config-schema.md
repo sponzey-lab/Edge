@@ -41,6 +41,7 @@ data_dir = ".sponzey"
 [runtime]
 max_connections = 1024
 max_inflight_payload_bytes = 134217728
+upstream_read_timeout_ms = 30000
 
 # Optional. Omission keeps metrics disabled.
 [metrics]
@@ -138,6 +139,11 @@ automatically rewritten as v2.
   command to the running core. The old policy remains active until process
   restart loads the repository current revision; rolling back before restart
   also sends no resource-policy hot command.
+- `runtime.upstream_read_timeout_ms` defaults to `30000` and must be in
+  `10..=120000`. It bounds waiting for upstream response bytes after forwarding;
+  expiry produces a 504 without logging request or response bodies. It is part
+  of the immutable startup resource policy, so a changed revision is pending
+  restart and the running core retains its previous value.
 - Metrics are disabled when `[metrics]` is omitted. When enabled, `bind` must
   be a loopback socket address. Metrics enable/bind changes require restart;
   runtime environment variables cannot toggle this listener.
