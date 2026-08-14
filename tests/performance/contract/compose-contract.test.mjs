@@ -54,6 +54,11 @@ test("performance Compose declares the four-service measurement boundary", () =>
   assert.deepEqual(config.services["edge-perf"].ports ?? [], []);
   assert.deepEqual(config.services["load-generator"].ports ?? [], []);
   assert.equal(config.services["load-generator"].network_mode, "service:edge-perf");
+  assert.deepEqual(config.services["load-generator"].secrets, [{
+    source: "performance-admin-credential",
+    target: "admin-credential.secret",
+    mode: "0400",
+  }]);
 
   for (const serviceName of ["edge-perf", "node-upstream", "load-generator"]) {
     const service = config.services[serviceName];

@@ -31,6 +31,7 @@ test("test PKI generator keeps private material in an owner-only ignored runtime
     assert.equal(mode(path.join(output, "server")), 0o700);
     assert.equal(mode(path.join(output, "server", "privkey.pem")), 0o600);
     assert.equal(mode(path.join(output, "edge-data", "certs", "edge-test-cert", "privkey.pem")), 0o600);
+    assert.equal(mode(path.join(output, "admin-credential.secret")), 0o600);
     assert.equal(mode(path.join(output, "root-cert.pem")), 0o644);
     assert.equal(mode(path.join(output, "server", "fullchain.pem")), 0o644);
     assert.equal(mode(path.join(output, "edge-data", "certs", "edge-test-cert", "metadata.toml")), 0o644);

@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -89,6 +90,11 @@ function prepare(output) {
   }
   ownerOnlyDirectory(output);
   writeFileSync(path.join(output, markerName), "test-pki-runtime-v1\n", { mode: 0o600 });
+  writeFileSync(
+    path.join(output, "admin-credential.secret"),
+    randomBytes(32).toString("base64url"),
+    { mode: 0o600 },
+  );
 
   const work = path.join(output, "work");
   const server = path.join(output, "server");

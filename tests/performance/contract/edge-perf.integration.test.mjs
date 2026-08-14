@@ -97,3 +97,11 @@ test("release edge-perf terminates trusted TLS and rejects the wrong SNI", () =>
   );
   assert.match(rejected, /^(ECONNRESET|ERR_TLS_CERT_ALTNAME_INVALID)$/);
 });
+
+test("load-generator performs Admin setup, login, validate, apply, and rollback over Edge loopback", () => {
+  prepareRuntime();
+  startPerformanceServices();
+
+  const output = compose("run", "--rm", "load-generator", "run", "/scripts/admin-lifecycle.js");
+  assert.doesNotMatch(output, /admin-credential|password_hash|PRIVATE KEY/);
+});

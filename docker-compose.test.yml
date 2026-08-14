@@ -90,6 +90,11 @@ services:
     command: ["version"]
     volumes:
       - ./tests/performance/k6:/scripts:ro
+      - ./tests/performance/config/edge-perf.toml:/fixtures/edge-perf.toml:ro
+    secrets:
+      - source: performance-admin-credential
+        target: admin-credential.secret
+        mode: 0400
     logging: *performance_logging
 
 volumes:
@@ -103,3 +108,7 @@ networks:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+
+secrets:
+  performance-admin-credential:
+    file: ./artifacts/performance/edge-perf-runtime/admin-credential.secret
