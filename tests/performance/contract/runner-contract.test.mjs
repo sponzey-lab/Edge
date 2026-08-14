@@ -49,6 +49,8 @@ test("failed k6 runs retain bounded diagnostics in their unpublishable artifact"
   const common = readFileSync(path.join(root, "tests/performance/k6/profile-common.js"), "utf8");
   assert.match(source, /load-generator\.log/);
   assert.match(source, /64 \* 1024/);
+  assert.match(source, /failureEvents/);
+  assert.match(source, /edge\\\.payload\\\.failed/);
   assert.match(common, /edge\.payload\.failed/);
   assert.match(common, /status_code/);
 });

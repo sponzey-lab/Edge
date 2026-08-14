@@ -93,6 +93,7 @@ function runLoadGenerator(args, samples) {
   return new Promise((resolve, reject) => {
     let samplingError;
     let diagnostics = "";
+    let failureEvents = "";
     const appendDiagnostics = (chunk) => {
       diagnostics = `${diagnostics}${chunk}`.slice(-(64 * 1024));
     };
@@ -101,16 +102,22 @@ function runLoadGenerator(args, samples) {
     };
     sample();
     const timer = setInterval(sample, 1_000);
+    const captureDiagnostics = (chunk) => {
+      const text = chunk.toString("utf8");
+      appendDiagnostics(text);
+      const events = text.match(/\{"event":"edge\.payload\.failed"[^\n]*\}/g) ?? [];
+      if (events.length > 0) failureEvents = `${failureEvents}${events.join("\n")}\n`.slice(-(8 * 1024));
+    };
     const child = spawn("docker", args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout.on("data", appendDiagnostics);
-    child.stderr.on("data", appendDiagnostics);
+    child.stdout.on("data", captureDiagnostics);
+    child.stderr.on("data", captureDiagnostics);
     child.once("error", (error) => { clearInterval(timer); reject(error); });
     child.once("close", (code) => {
       clearInterval(timer);
       sample();
       if (code !== 0) {
         const error = new Error(`load-generator exited with status ${code}`);
-        error.diagnostics = diagnostics;
+        error.diagnostics = `${failureEvents}--- k6 output tail ---\n${diagnostics}`;
         reject(error);
       }
       else if (samplingError || samples.length === 0) reject(samplingError ?? new Error("no Edge resource samples collected"));
