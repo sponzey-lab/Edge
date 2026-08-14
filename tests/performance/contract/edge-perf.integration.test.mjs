@@ -117,10 +117,10 @@ test("release edge-perf maps the configured upstream read timeout to 504", { con
   startPerformanceServices();
   const output = compose("exec", "-T", "node-upstream", "node", "-e", [
     "const http = require('node:http');",
-    "const request = http.get({host:'172.30.0.2',port:8080,path:'/delay/slow',headers:{Host:'edge.test'}}, response => {",
+    "const request = http.get({host:'172.30.0.2',port:8080,path:'/delay/very-slow',headers:{Host:'edge.test'}}, response => {",
     "response.resume(); response.on('end', () => process.stdout.write(String(response.statusCode)));",
     "});",
-    "request.setTimeout(1000, () => { process.stderr.write('client timeout'); process.exitCode = 1; request.destroy(); });",
+    "request.setTimeout(2500, () => { process.stderr.write('client timeout'); process.exitCode = 1; request.destroy(); });",
     "request.on('error', error => { process.stderr.write(error.message); process.exitCode = 1; });",
   ].join(""));
   assert.equal(output, "504");

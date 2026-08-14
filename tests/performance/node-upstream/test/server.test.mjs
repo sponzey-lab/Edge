@@ -247,6 +247,12 @@ test("status and delay fixtures accept only closed presets", async () => {
     assert.equal(slow.statusCode, 200);
     assert.deepEqual(JSON.parse(slow.body.toString("utf8")), { delay: "slow" });
     assert.ok(slowElapsedMilliseconds >= 90, `slow elapsed=${slowElapsedMilliseconds}`);
+    const timeoutStart = process.hrtime.bigint();
+    const timeout = await request(`${baseUrl}/delay/very-slow`);
+    const timeoutElapsedMilliseconds = Number(process.hrtime.bigint() - timeoutStart) / 1_000_000;
+    assert.equal(timeout.statusCode, 200);
+    assert.deepEqual(JSON.parse(timeout.body.toString("utf8")), { delay: "very-slow" });
+    assert.ok(timeoutElapsedMilliseconds >= 1_400, `very slow elapsed=${timeoutElapsedMilliseconds}`);
     assert.equal((await request(`${baseUrl}/delay/arbitrary`)).statusCode, 404);
   });
 });
