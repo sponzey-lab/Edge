@@ -9,6 +9,17 @@ Phase evidence를 설명하는 추적 정보이며 현재 실행 가능한 명�
 `cargo test --workspace -- --test-threads=1`, 실제 `edge-proxy` 실행과 필요한 수동/통합
 검증이다.
 
+## Performance Test Environment
+
+The separate `tests/performance/` Compose boundary now provides a production
+`edge-perf` release image, deterministic Node upstream, Edge-only k6 profiles,
+host-only CPU/memory samples, fail-closed summary/audit, and a 30-second smoke
+CI gate. Baseline (three independent warmup/measurement runs), stress, and
+30-minute soak remain manual characterization profiles. Their ignored artifacts
+are supplemental evidence only: they do not replace the canonical Phase 011
+7,200-second/platform release gate, and no regression threshold has been
+approved yet.
+
 이 문서는 Phase 001부터 Phase 011까지 완료된 구현의 현재 기준이다. 상세 과거 계획과 실행
 기록은 `.tasks/phase001/`부터 `.tasks/phase009/`에 보관하며, Phase 010 완료 판정은
 `artifacts/release-evidence/phase010-20260716-final-r2`와

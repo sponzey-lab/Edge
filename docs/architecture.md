@@ -31,6 +31,18 @@ bin/apps
 - `apps/edge-proxy`: process bootstrap, environment read-once boundary, dependency wiring.
 - `apps/admin-web`: optional Admin Web UI, implemented as an Admin API client.
 
+## Performance Test Boundary
+
+`tests/performance/` is a test-tool boundary, not a workspace member or a
+production dependency. Its traffic path is `k6 load-generator -> edge-perf
+release image -> deterministic node-upstream`; k6 is given only the Edge
+endpoint. The host-side runner owns Docker CLI resource sampling, generated
+test PKI, raw ignored artifacts, summary/audit, and profile orchestration.
+Neither the production Core nor the containers receive a Docker socket, and
+Admin remains loopback-only inside the shared Edge network. Performance
+evidence is supplemental characterization and does not enter the data-plane
+dependency graph or replace the Phase 011 release/memory boundary.
+
 ## Runtime Boundary
 
 Runtime resource status crosses the data-plane/control-plane boundary through
