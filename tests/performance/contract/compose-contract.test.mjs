@@ -58,6 +58,11 @@ test("performance Compose declares the four-service measurement boundary", () =>
     source: "performance-admin-credential",
     target: "admin-credential.secret",
   }]);
+  assert.ok(config.services["load-generator"].volumes.some((volume) => (
+    volume.source === path.join(repositoryRoot, "artifacts", "performance")
+    && volume.target === "/results"
+    && !volume.read_only
+  )));
 
   for (const serviceName of ["edge-perf", "node-upstream", "load-generator"]) {
     const service = config.services[serviceName];

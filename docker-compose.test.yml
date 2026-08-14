@@ -91,6 +91,7 @@ services:
     volumes:
       - ./tests/performance/k6:/scripts:ro
       - ./tests/performance/config/edge-perf.toml:/fixtures/edge-perf.toml:ro
+      - ./artifacts/performance:/results
     secrets:
       - source: performance-admin-credential
         target: admin-credential.secret
