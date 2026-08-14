@@ -6,6 +6,8 @@ not a Rust workspace member and its outputs do not become runtime policy or Phas
 | Path | Responsibility | Boundary / Side effects |
 | --- | --- | --- |
 | `contract/compose-contract.test.mjs` | Verifies Compose service, exposure, and pinned-image contracts. | Invokes Docker Compose configuration only. |
+| `contract/edge-perf.integration.test.mjs` | Verifies release Edge HTTP Host routing and trusted HTTPS/SNI routing to the fixed Node upstream. | Recreates only performance services after explicit PKI preparation and sends no request body or credentials. |
+| `bin/prepare-pki-runtime.mjs` | Generates and deletes fixed-SAN PKI, Edge certificate-store seed, and client trust at an explicit artifact path. | Requires `artifacts/performance/`, keeps private keys owner-only, and never prints PEM material. |
 | `node-upstream/` | Deterministic upstream application and dashboard. | See [`node-upstream/source.md`](node-upstream/source.md); no Edge config mutation. |
 | `k6/` | Versioned functional and performance workloads. | One-shot load process; targets Edge only. |
 | `config/` | Non-secret Edge test configuration and PKI generation profile. | Generated keys and runtime values stay outside source control. |

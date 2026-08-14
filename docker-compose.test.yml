@@ -31,8 +31,21 @@ services:
       context: .
       dockerfile: Dockerfile
     init: true
+    user: "0:0"
+    entrypoint:
+      - /usr/bin/bash
+      - -ec
+      - |
+        find /var/lib/sponzey-edge/data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        cp -a /test-runtime/edge-data/. /var/lib/sponzey-edge/data/
+        chown -R edge:edge /var/lib/sponzey-edge/data
+        exec /usr/sbin/runuser -u edge -- /usr/local/bin/edge-proxy
+    networks:
+      - performance-net
     volumes:
       - ./tests/performance/config/edge-perf.toml:/etc/sponzey-edge/current.toml:ro
+      - ./artifacts/performance/edge-perf-runtime:/test-runtime:ro
+      - edge-perf-data:/var/lib/sponzey-edge/data
     healthcheck:
       test: ["CMD-SHELL", "test -x /usr/local/bin/edge-proxy"]
       interval: 30s
@@ -51,10 +64,14 @@ services:
     init: true
     working_dir: /app
     command: ["node", "src/server.mjs"]
+    networks:
+      performance-net:
+        ipv4_address: 172.30.0.3
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
       - ./tests/performance/node-upstream:/app:ro
+      - ./artifacts/performance/edge-perf-runtime/client-ca.pem:/test-pki/client-ca.pem:ro
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 30s
@@ -79,3 +96,10 @@ volumes:
   cargo-registry:
   cargo-git:
   cargo-target:
+  edge-perf-data:
+
+networks:
+  performance-net:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

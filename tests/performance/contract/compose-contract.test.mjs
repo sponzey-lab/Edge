@@ -73,7 +73,7 @@ test("performance Compose declares the four-service measurement boundary", () =>
   assert.equal(dashboardPort.host_ip, "127.0.0.1");
 });
 
-test("edge-perf mounts a non-secret HTTP route config for the production image", () => {
+test("edge-perf mounts a non-secret HTTP route config with a stable literal upstream", () => {
   const config = composeConfig();
   const edgePerf = config.services["edge-perf"];
   const routeConfig = readFileSync(
@@ -89,7 +89,25 @@ test("edge-perf mounts a non-secret HTTP route config for the production image",
       && volume.read_only
     )),
   );
-  assert.match(routeConfig, /url = "http:\/\/node-upstream:3000"/);
+  const upstream = config.services["node-upstream"];
+  const network = config.networks["performance-net"];
+
+  assert.deepEqual(network.ipam.config, [{ subnet: "172.30.0.0/24" }]);
+  assert.equal(upstream.networks["performance-net"].ipv4_address, "172.30.0.3");
+  assert.match(routeConfig, /url = "http:\/\/172\.30\.0\.3:3000"/);
   assert.match(routeConfig, /hosts = \["edge\.test"\]/);
   assert.match(routeConfig, /bind = "0\.0\.0\.0:8080"/);
+  assert.match(routeConfig, /bind = "0\.0\.0\.0:8443"/);
+  assert.match(routeConfig, /protocol = "https"/);
+  assert.match(routeConfig, /certificate_ref = "edge-test-cert"/);
+  assert.ok(
+    edgePerf.volumes.some((volume) => (
+      volume.target === "/test-runtime" && volume.read_only
+    )),
+  );
+  assert.ok(
+    upstream.volumes.some((volume) => (
+      volume.target === "/test-pki/client-ca.pem" && volume.read_only
+    )),
+  );
 });

@@ -19,14 +19,20 @@ name = "http"
 bind = "0.0.0.0:8080"
 protocol = "http"
 
+[[listeners]]
+name = "https"
+bind = "0.0.0.0:8443"
+protocol = "https"
+
 [[services]]
 name = "node-upstream"
 
 [[services.upstreams]]
-url = "http://node-upstream:3000"
+url = "http://172.30.0.3:3000"
 
 [[routes]]
 name = "edge-test-route"
 hosts = ["edge.test"]
 paths = ["/"]
 service = "node-upstream"
+certificate_ref = "edge-test-cert"
