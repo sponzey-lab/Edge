@@ -12,7 +12,7 @@ data_dir = "/var/lib/sponzey-edge/data"
 
 [runtime]
 max_connections = 1024
-max_inflight_payload_bytes = 33554432
+max_inflight_payload_bytes = 100663296
 upstream_read_timeout_ms = 1000
 
 [[listeners]]
