@@ -1,0 +1,96 @@
+name: Performance Test Environment
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Manual performance profile to run.
+        required: true
+        default: smoke
+        type: choice
+        options: [smoke, baseline, stress, soak]
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Performance contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: npm
+          cache-dependency-path: tests/performance/node-upstream/package-lock.json
+      - name: Validate Compose model
+        run: docker compose --profile performance -f docker-compose.test.yml config
+      - name: Run deterministic performance contracts
+        run: >-
+          node --test --test-reporter=spec --test-concurrency=1
+          tests/performance/contract/compose-contract.test.mjs
+          tests/performance/contract/documentation-contract.test.mjs
+          tests/performance/contract/k6-contract.test.mjs
+          tests/performance/contract/pki-runtime.test.mjs
+          tests/performance/contract/runner-contract.test.mjs
+          tests/performance/contract/summary-contract.test.mjs
+          tests/performance/node-upstream/test/server.test.mjs
+
+  smoke:
+    name: Release Edge functional smoke
+    needs: contract
+    if: github.event_name != 'workflow_dispatch' || inputs.profile == 'smoke'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+      - name: Run release Edge smoke
+        run: node tests/performance/bin/run.mjs smoke
+      - name: Upload non-secret smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-smoke-evidence
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            artifacts/performance/*/metadata.json
+            artifacts/performance/*/state.json
+            artifacts/performance/*/summary.json
+            artifacts/performance/*/edge-resource-samples.json
+            artifacts/performance/*/smoke-*.json
+
+  manual-profile:
+    name: Manual ${{ inputs.profile }} profile
+    needs: contract
+    if: github.event_name == 'workflow_dispatch' && inputs.profile != 'smoke'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+      - name: Run selected manual profile
+        run: node tests/performance/bin/run.mjs "${{ inputs.profile }}"
+      - name: Upload non-secret manual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-${{ inputs.profile }}-evidence
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            artifacts/performance/*/metadata.json
+            artifacts/performance/*/state.json
+            artifacts/performance/*/summary.json
+            artifacts/performance/*/edge-resource-samples.json
+            artifacts/performance/*/${{ inputs.profile }}-*.json

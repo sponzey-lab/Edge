@@ -105,6 +105,11 @@ run the smoke gate and create a new baseline candidate; do not compare results a
 source/image identities. These performance artifacts are supplemental characterization only. They
 do not replace the canonical Phase 011 7,200-second memory/release evidence or its platform gates.
 
+GitHub Actions runs the Compose/Node/profile contracts and this smoke profile for pull requests and
+pushes to `main` or `develop`. `baseline`, `stress`, and `soak` are manual `workflow_dispatch`
+choices only. CI retains only allow-listed non-secret summary, state, metadata, and resource sample
+files for 14 days; generated test PKI and its private key are never uploaded.
+
 ## Configuration Contract Check
 
 Validate the Compose model without starting a container:
