@@ -22,7 +22,10 @@ async function withServer(run, options = {}) {
 
 function request(url, options = {}) {
   return new Promise((resolve, reject) => {
-    http.get(url, { agent: false, ...options }, (response) => {
+    const requestOptions = { agent: false, ...options };
+    const body = requestOptions.body;
+    delete requestOptions.body;
+    const clientRequest = http.request(url, requestOptions, (response) => {
       const chunks = [];
       response.on("data", (chunk) => chunks.push(chunk));
       response.on("end", () => resolve({
@@ -30,7 +33,12 @@ function request(url, options = {}) {
         headers: response.headers,
         body: Buffer.concat(chunks),
       }));
-    }).on("error", reject);
+    });
+    clientRequest.on("error", reject);
+    if (body !== undefined) {
+      clientRequest.write(body);
+    }
+    clientRequest.end();
   });
 }
 
@@ -150,6 +158,54 @@ test("payload endpoint ignores query input and rejects unknown presets", async (
     assert.deepEqual(fixed.body, payloadPresets.small);
     assert.equal(unknown.statusCode, 404);
     assert.deepEqual(JSON.parse(unknown.body.toString("utf8")), { code: "NOT_FOUND" });
+  });
+});
+
+test("header fixture projects only the closed request header contract", async () => {
+  await withServer(async (baseUrl) => {
+    const response = await request(`${baseUrl}/inspect/headers`, {
+      headers: {
+        "x-sponzey-fixture": "preserve-me",
+        "x-forwarded-for": "198.51.100.9",
+        connection: "keep-alive, x-hop-by-hop",
+        "x-hop-by-hop": "remove-me",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(JSON.parse(response.body.toString("utf8")), {
+      host: new URL(baseUrl).host,
+      fixture_header: "preserve-me",
+      forwarded_for: "198.51.100.9",
+      hop_by_hop: "remove-me",
+    });
+  });
+});
+
+test("body fixture returns only the fixed POST body digest and rejects oversized input", async () => {
+  await withServer(async (baseUrl) => {
+    const body = "edge-request-body-v1";
+    const response = await request(`${baseUrl}/inspect/body`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", "content-length": Buffer.byteLength(body) },
+      body,
+    });
+    const document = JSON.parse(response.body.toString("utf8"));
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(document, {
+      bytes: Buffer.byteLength(body),
+      digest: `sha256:${createHash("sha256").update(body).digest("hex")}`,
+    });
+    assert.equal(response.body.toString("utf8").includes(body), false);
+
+    const oversized = await request(`${baseUrl}/inspect/body`, {
+      method: "POST",
+      headers: { "content-length": 4097 },
+      body: "x".repeat(4097),
+    });
+    assert.equal(oversized.statusCode, 413);
+    assert.deepEqual(JSON.parse(oversized.body.toString("utf8")), { code: "BODY_TOO_LARGE" });
   });
 });
 

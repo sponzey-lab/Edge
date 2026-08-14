@@ -17,6 +17,7 @@ export const payloadPresets = Object.freeze({
 const delayPresetsMilliseconds = Object.freeze({
   short: 25,
 });
+const maximumInspectableBodyBytes = 4096;
 const webSocketAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const dashboardHtml = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 
@@ -51,6 +52,48 @@ function sendDashboard(response) {
   response.setHeader("content-length", body.length);
   response.setHeader("content-type", "text/html; charset=utf-8");
   response.end(body);
+}
+
+function inspectRequestHeaders(request) {
+  return {
+    host: request.headers.host ?? null,
+    fixture_header: request.headers["x-sponzey-fixture"] ?? null,
+    forwarded_for: request.headers["x-forwarded-for"] ?? null,
+    hop_by_hop: request.headers["x-hop-by-hop"] ?? null,
+  };
+}
+
+function inspectRequestBody(request, response) {
+  const declaredBytes = Number(request.headers["content-length"] ?? 0);
+  if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0 || declaredBytes > maximumInspectableBodyBytes) {
+    request.resume();
+    sendJson(response, 413, { code: "BODY_TOO_LARGE" });
+    return;
+  }
+
+  const chunks = [];
+  let receivedBytes = 0;
+  let completed = false;
+  request.on("data", (chunk) => {
+    receivedBytes += chunk.length;
+    if (receivedBytes > maximumInspectableBodyBytes) {
+      completed = true;
+      request.resume();
+      sendJson(response, 413, { code: "BODY_TOO_LARGE" });
+      return;
+    }
+    chunks.push(chunk);
+  });
+  request.on("end", () => {
+    if (completed) {
+      return;
+    }
+    const body = Buffer.concat(chunks);
+    sendJson(response, 200, {
+      bytes: body.length,
+      digest: `sha256:${createHash("sha256").update(body).digest("hex")}`,
+    });
+  });
 }
 
 function sendWebSocketText(socket, payload) {
@@ -110,6 +153,10 @@ function attachWebSocketEcho(socket, initialData) {
 
 function handleRequest(request, response, metrics) {
   const pathname = new URL(request.url, "http://node-upstream.invalid").pathname;
+  if (pathname === "/inspect/body" && request.method === "POST") {
+    inspectRequestBody(request, response);
+    return;
+  }
   if (request.method !== "GET") {
     sendJson(response, 405, { code: "METHOD_NOT_ALLOWED" });
     return;
@@ -117,6 +164,11 @@ function handleRequest(request, response, metrics) {
 
   if (pathname === "/health") {
     sendJson(response, 200, { status: "ok" });
+    return;
+  }
+
+  if (pathname === "/inspect/headers") {
+    sendJson(response, 200, inspectRequestHeaders(request));
     return;
   }
 

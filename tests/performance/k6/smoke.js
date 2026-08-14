@@ -5,6 +5,8 @@ import ws from "k6/ws";
 const httpBaseUrl = "http://edge.test:8080";
 const httpsBaseUrl = "https://edge.test:8443";
 const fixtureDigest = "sha256:ede19c3fe66fe9de4bac5620355b00c4f6b6d48ab890f2d90e896d863f636220";
+const requestBody = "edge-request-body-v1";
+const requestBodyDigest = "sha256:bfcb757022c48360ee7ffe74943b9cc7a973e98f4b55732d86021ce1493a4ea3";
 
 export const options = {
   insecureSkipTLSVerify: true,
@@ -67,6 +69,26 @@ export default function () {
   requireCheck(getExpected(`${httpBaseUrl}/status/400`, 400), { "expected 400 is preserved": (response) => response.status === 400 }, "status 400");
   requireCheck(getExpected(`${httpBaseUrl}/status/500`, 500), { "expected 500 is preserved": (response) => response.status === 500 }, "status 500");
   requireCheck(http.get(`${httpBaseUrl}/delay/short`), { "fixed delay succeeds": (response) => response.status === 200 }, "delay");
+  const headerProjection = http.get(`${httpBaseUrl}/inspect/headers`, {
+    headers: {
+      "X-Sponzey-Fixture": "preserve-me",
+      "X-Forwarded-For": "198.51.100.9",
+      Connection: "keep-alive, X-Hop-By-Hop",
+      "X-Hop-By-Hop": "remove-me",
+    },
+  });
+  requireCheck(headerProjection, {
+    "custom header is preserved": (response) => JSON.parse(response.body).fixture_header === "preserve-me",
+    "forwarded client address is normalized": (response) => JSON.parse(response.body).forwarded_for === "127.0.0.1",
+    "hop-by-hop header is removed": (response) => JSON.parse(response.body).hop_by_hop === null,
+  }, "header projection");
+  const bodyProjection = http.post(`${httpBaseUrl}/inspect/body`, requestBody, {
+    headers: { "content-type": "text/plain" },
+  });
+  requireCheck(bodyProjection, {
+    "POST body succeeds": (response) => response.status === 200,
+    "POST body digest matches": (response) => JSON.parse(response.body).digest === requestBodyDigest,
+  }, "body projection");
   requireCheck(http.get(`${httpBaseUrl}/stream/chunks`), { "chunk stream is preserved": (response) => response.status === 200 && response.body === "chunk-1\nchunk-2\nchunk-3\n" }, "stream");
   requireCheck(
     http.get(`${httpBaseUrl}/reset`, { responseCallback: http.expectedStatuses(0, 502) }),
