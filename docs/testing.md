@@ -90,7 +90,7 @@ node tests/performance/bin/run.mjs soak
 Every successful run is published under `artifacts/performance/<run-id>/`, which is ignored by Git.
 Inspect `metadata.json` for source/image/host identity, each k6 `*.json` for raw output,
 `edge-resource-samples.json` for host-side CPU/memory observations, and `summary.json` for RPS,
-p50/p95/p99, error, and bytes. A baseline summary additionally contains the min/median/max
+p50/p95/p99, error, bytes, and CPU/memory distribution with first/last memory delta. A baseline summary additionally contains the min/median/max
 distribution from exactly three runs. `*.partial` directories represent failed or interrupted runs
 and must not be promoted as a baseline.
 

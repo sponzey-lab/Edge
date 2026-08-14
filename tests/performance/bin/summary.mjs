@@ -67,3 +67,29 @@ export function compareBaseline(runs) {
     },
   };
 }
+
+export function summarizeResources(samples) {
+  if (!Array.isArray(samples) || samples.length === 0) throw new Error("resource summary requires samples");
+  let previous = -Infinity;
+  for (const sample of samples) {
+    const timestamp = Date.parse(sample.sampled_at);
+    if (!Number.isFinite(timestamp) || timestamp <= previous) throw new Error("resource samples are not strictly ordered");
+    number(sample.cpu_percent, "resource.cpu_percent");
+    number(sample.memory_usage_bytes, "resource.memory_usage_bytes");
+    if (sample.cpu_percent < 0 || sample.memory_usage_bytes < 0) throw new Error("resource sample is negative");
+    previous = timestamp;
+  }
+  const first = samples[0];
+  const last = samples.at(-1);
+  return {
+    sample_count: samples.length,
+    cpu_percent: distribution(samples.map((sample) => sample.cpu_percent)),
+    memory_usage_bytes: {
+      ...distribution(samples.map((sample) => sample.memory_usage_bytes)),
+      first: first.memory_usage_bytes,
+      last: last.memory_usage_bytes,
+      delta: last.memory_usage_bytes - first.memory_usage_bytes,
+    },
+    elapsed_ms: Date.parse(last.sampled_at) - Date.parse(first.sampled_at),
+  };
+}
