@@ -44,6 +44,15 @@ test("runner keeps enough bounded process output for a full smoke summary", () =
   assert.match(source, /renameSync\(tempDir, finalDir\)/);
 });
 
+test("failed k6 runs retain bounded diagnostics in their unpublishable artifact", () => {
+  const source = readFileSync(runner, "utf8");
+  const common = readFileSync(path.join(root, "tests/performance/k6/profile-common.js"), "utf8");
+  assert.match(source, /load-generator\.log/);
+  assert.match(source, /64 \* 1024/);
+  assert.match(common, /edge\.payload\.failed/);
+  assert.match(common, /status_code/);
+});
+
 test("resource sampler normalizes Docker CPU and memory values", async () => {
   const { parseDockerStats } = await import(runner);
   assert.deepEqual(

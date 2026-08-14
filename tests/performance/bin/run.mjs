@@ -92,17 +92,27 @@ function sampleEdge() {
 function runLoadGenerator(args, samples) {
   return new Promise((resolve, reject) => {
     let samplingError;
+    let diagnostics = "";
+    const appendDiagnostics = (chunk) => {
+      diagnostics = `${diagnostics}${chunk}`.slice(-(64 * 1024));
+    };
     const sample = () => {
       try { samples.push(sampleEdge()); } catch (error) { samplingError ??= error; }
     };
     sample();
     const timer = setInterval(sample, 1_000);
-    const child = spawn("docker", args, { cwd: root, stdio: "ignore" });
+    const child = spawn("docker", args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.on("data", appendDiagnostics);
+    child.stderr.on("data", appendDiagnostics);
     child.once("error", (error) => { clearInterval(timer); reject(error); });
     child.once("close", (code) => {
       clearInterval(timer);
       sample();
-      if (code !== 0) reject(new Error(`load-generator exited with status ${code}`));
+      if (code !== 0) {
+        const error = new Error(`load-generator exited with status ${code}`);
+        error.diagnostics = diagnostics;
+        reject(error);
+      }
       else if (samplingError || samples.length === 0) reject(samplingError ?? new Error("no Edge resource samples collected"));
       else resolve();
     });
@@ -134,7 +144,12 @@ export async function runProfile(profile, { dryRun = false, artifactRoot = path.
     history = transition(history, RunState.Running);
     const samples = [];
     for (let index = 1; index <= plan.repetitions; index += 1) {
-      await runLoadGenerator([...compose, "run", "--rm", "load-generator", "run", "--summary-export", `/results/${id}.partial/${profile}-${index}.json`, `/scripts/${plan.script}`], samples);
+      try {
+        await runLoadGenerator([...compose, "run", "--rm", "load-generator", "run", "--summary-export", `/results/${id}.partial/${profile}-${index}.json`, `/scripts/${plan.script}`], samples);
+      } catch (error) {
+        writeFileSync(path.join(tempDir, `${profile}-${index}.load-generator.log`), error.diagnostics ?? String(error.message), { mode: 0o600 });
+        throw error;
+      }
     }
     history = transition(history, RunState.Cooldown);
     history = transition(history, RunState.Validating);

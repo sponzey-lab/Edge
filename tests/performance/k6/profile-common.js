@@ -1,6 +1,9 @@
 import http from "k6/http";
 import { check, fail } from "k6";
+import { Counter } from "k6/metrics";
 import exec from "k6/execution";
+
+const payloadFailures = new Counter("edge_payload_failures");
 
 export const edgeOptions = {
   insecureSkipTLSVerify: true,
@@ -14,6 +17,13 @@ export function edgeRequest() {
     tags: { performance_phase: exec.scenario.name },
   });
   if (!check(response, { "Edge payload succeeds": (item) => item.status === 200 })) {
+    const failure = {
+      event: "edge.payload.failed",
+      status_code: response.status,
+      error_code: response.error_code || "none",
+    };
+    payloadFailures.add(1, { status_code: String(failure.status_code), error_code: failure.error_code });
+    console.error(JSON.stringify(failure));
     fail("Edge payload check failed");
   }
 }
