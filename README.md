@@ -129,6 +129,22 @@ docker compose -f docker-compose.test.yml exec edge-test \
 The test container exposes no host port and does not mount runtime data or secrets. See
 [`docs/testing.md`](docs/testing.md) for focused tests, lifecycle commands, and safety boundaries.
 
+### Release Performance Test Environment
+
+The long-lived Compose performance boundary is separate from `edge-test`: it builds the production
+`edge-perf` image and sends k6 traffic through it to a deterministic Node.js upstream. Start with
+the functional gate:
+
+```bash
+node tests/performance/bin/run.mjs smoke
+```
+
+The runner recreates only the performance services, generates ignored test PKI, and publishes raw
+results under `artifacts/performance/<run-id>/`. It exposes only the read-only Node dashboard at
+`127.0.0.1:3000`; Edge Admin has no host port and Docker socket access is never mounted into a
+container. See [`docs/testing.md`](docs/testing.md#release-performance-test-environment) before
+running the longer baseline, stress, or soak profiles.
+
 ## Usage
 
 ### 1. Prepare An Upstream
@@ -160,6 +176,7 @@ data_dir = ".sponzey"
 [runtime]
 max_connections = 1024
 max_inflight_payload_bytes = 134217728
+upstream_read_timeout_ms = 30000
 
 [[listeners]]
 name = "http"

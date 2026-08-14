@@ -125,6 +125,21 @@ docker compose -f docker-compose.test.yml exec edge-test \
 테스트 컨테이너는 host port를 공개하지 않고 운영 data나 secret을 mount하지 않습니다. 집중
 테스트, 중지·재시작 및 cache 초기화 방법은 [`docs/testing.md`](docs/testing.md)를 참고하십시오.
 
+### Release 성능 테스트 환경
+
+지속 Compose 성능 경계는 `edge-test`와 분리됩니다. production `edge-perf` 이미지를 빌드하고,
+결정론적 Node.js upstream까지의 경로로 k6 트래픽을 전송합니다. 먼저 기능 gate를 실행합니다.
+
+```bash
+node tests/performance/bin/run.mjs smoke
+```
+
+runner는 성능 서비스만 재생성하고 ignored test PKI를 만들며 raw 결과를
+`artifacts/performance/<run-id>/`에 게시합니다. host에는 읽기 전용 Node dashboard만
+`127.0.0.1:3000`으로 공개합니다. Edge Admin은 host port가 없고 컨테이너에 Docker socket을
+mount하지 않습니다. 긴 baseline/stress/soak profile은
+[`docs/testing.md`](docs/testing.md#release-performance-test-environment)를 먼저 확인하십시오.
+
 ## 사용법
 
 ### 1. Upstream 준비
@@ -156,6 +171,7 @@ data_dir = ".sponzey"
 [runtime]
 max_connections = 1024
 max_inflight_payload_bytes = 134217728
+upstream_read_timeout_ms = 30000
 
 [[listeners]]
 name = "http"
