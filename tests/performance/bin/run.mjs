@@ -3,6 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { compareBaseline, summarizeFiles } from "./summary.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const compose = ["compose", "--profile", "performance", "-f", "docker-compose.test.yml"];
@@ -137,6 +138,8 @@ export async function runProfile(profile, { dryRun = false, artifactRoot = path.
     }
     history = transition(history, RunState.Cooldown);
     history = transition(history, RunState.Validating);
+    const runs = summarizeFiles(Array.from({ length: plan.repetitions }, (_, index) => path.join(tempDir, `${profile}-${index + 1}.json`)));
+    writeFileSync(path.join(tempDir, "summary.json"), `${JSON.stringify({ profile, runs, baseline_comparison: profile === "baseline" ? compareBaseline(runs) : undefined }, null, 2)}\n`, { mode: 0o600 });
     writeFileSync(path.join(tempDir, "edge-resource-samples.json"), `${JSON.stringify(samples, null, 2)}\n`, { mode: 0o600 });
     writeFileSync(path.join(tempDir, "state.json"), `${JSON.stringify({ history }, null, 2)}\n`, { mode: 0o600 });
     renameSync(tempDir, finalDir);

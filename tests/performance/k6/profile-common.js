@@ -6,6 +6,7 @@ export const edgeOptions = {
   insecureSkipTLSVerify: true,
   hosts: { "edge.test": "127.0.0.1" },
   thresholds: { checks: ["rate==1"], http_req_failed: ["rate==0"] },
+  summaryTrendStats: ["avg", "min", "med", "max", "p(50)", "p(90)", "p(95)", "p(99)"],
 };
 
 export function edgeRequest() {

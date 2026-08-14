@@ -11,6 +11,7 @@ test("k6 smoke workload targets Edge only and keeps expected failures explicit",
   const source = readFileSync(smoke, "utf8");
 
   assert.match(source, /duration:\s*"30s"/);
+  assert.match(source, /summaryTrendStats/);
   assert.match(source, /http:\/\/edge\.test:8080/);
   assert.match(source, /https:\/\/edge\.test:8443/);
   assert.match(source, /\/payload\/small/);
