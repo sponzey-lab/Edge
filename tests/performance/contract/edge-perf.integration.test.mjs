@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -46,6 +47,23 @@ function startPerformanceServices() {
   compose("up", "-d", "--wait", "edge-perf", "node-upstream");
 }
 
+function rawHttpRequest(request) {
+  const script = [
+    "const net = require('node:net');",
+    "const socket = net.createConnection({host:'172.30.0.2',port:8080});",
+    "const chunks = [];",
+    "socket.setTimeout(2000, () => { process.stderr.write('timeout'); process.exitCode = 1; socket.destroy(); });",
+    "socket.on('connect', () => socket.write(Buffer.from(process.argv[1], 'base64')));",
+    "socket.on('data', chunk => chunks.push(chunk));",
+    "socket.on('end', () => process.stdout.write(Buffer.concat(chunks).toString('utf8')));",
+    "socket.on('error', error => { process.stderr.write(error.message); process.exitCode = 1; });",
+  ].join("");
+  return compose(
+    "exec", "-T", "node-upstream", "node", "-e", script,
+    Buffer.from(request, "utf8").toString("base64"),
+  );
+}
+
 test("release edge-perf proxies the fixed Host route to node-upstream", () => {
   prepareRuntime();
   startPerformanceServices();
@@ -69,6 +87,29 @@ test("release edge-perf proxies the fixed Host route to node-upstream", () => {
   );
 
   assert.equal(output, "200:sponzey-edge-small-payload-v1\n");
+});
+
+test("release edge-perf rejects malformed framing and oversized declared bodies before upstream use", () => {
+  prepareRuntime();
+  startPerformanceServices();
+
+  const malformed = rawHttpRequest([
+    "POST /inspect/body HTTP/1.1",
+    "Host: edge.test",
+    "Content-Length: nope",
+    "",
+    "",
+  ].join("\r\n"));
+  assert.match(malformed, /^HTTP\/1\.1 400 Bad Request\r?\n/);
+
+  const oversized = rawHttpRequest([
+    "POST /inspect/body HTTP/1.1",
+    "Host: edge.test",
+    "Content-Length: 1048577",
+    "",
+    "",
+  ].join("\r\n"));
+  assert.match(oversized, /^HTTP\/1\.1 413 Payload Too Large\r?\n/);
 });
 
 test("release edge-perf terminates trusted TLS and rejects the wrong SNI", () => {
