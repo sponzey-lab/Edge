@@ -26,6 +26,9 @@ test("k6 smoke workload targets Edge only and keeps expected failures explicit",
   assert.match(source, /\/routing\/route-check/);
   assert.match(source, /\/routing\/priority\/route-check/);
   assert.match(source, /unmatched Host is rejected/);
+  assert.match(source, /\/routing\/exact\/route-check/);
+  assert.match(source, /exact route wins a same-priority prefix tie/);
+  assert.match(source, /exact route excludes child paths/);
   assert.match(source, /\/stream\/chunks/);
   assert.match(source, /\/reset/);
   assert.match(source, /\/ws\/echo/);

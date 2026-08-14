@@ -100,8 +100,10 @@ test("edge-perf mounts a non-secret HTTP route config with a stable literal upst
   assert.equal(upstream.networks["performance-net"].ipv4_address, "172.30.0.3");
   assert.match(routeConfig, /url = "http:\/\/172\.30\.0\.3:3000"/);
   assert.match(routeConfig, /url = "http:\/\/172\.30\.0\.3:3000\/route\/api"/);
+  assert.match(routeConfig, /url = "http:\/\/172\.30\.0\.3:3000\/route\/exact"/);
   assert.match(routeConfig, /hosts = \["edge\.test"\]/);
   assert.match(routeConfig, /priority = 20/);
+  assert.match(routeConfig, /exact_paths = \["\/routing\/exact\/route-check"\]/);
   assert.match(routeConfig, /bind = "0\.0\.0\.0:8080"/);
   assert.match(routeConfig, /bind = "0\.0\.0\.0:8443"/);
   assert.match(routeConfig, /protocol = "https"/);

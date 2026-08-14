@@ -103,6 +103,12 @@ export default function () {
   requireCheck(http.get(`${httpBaseUrl}/routing/priority/route-check`), {
     "higher priority route wins over longer prefix": (response) => response.status === 200 && JSON.parse(response.body).route === "api",
   }, "priority route");
+  requireCheck(http.get(`${httpBaseUrl}/routing/exact/route-check`), {
+    "exact route wins a same-priority prefix tie": (response) => response.status === 200 && JSON.parse(response.body).route === "exact",
+  }, "exact route");
+  requireCheck(http.get(`${httpBaseUrl}/routing/exact/route-check/child`), {
+    "exact route excludes child paths": (response) => response.status === 200 && JSON.parse(response.body).route === "api",
+  }, "exact route child");
   requireCheck(http.get(`${httpBaseUrl}/route-check`, {
     headers: { Host: "unmatched.edge.test" },
     responseCallback: http.expectedStatuses(404),

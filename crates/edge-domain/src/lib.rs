@@ -87,17 +87,30 @@ impl HostMatch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathMatch {
     prefix: String,
+    exact: bool,
 }
 
 impl PathMatch {
     pub fn prefix(path: impl AsRef<str>) -> Self {
         Self {
             prefix: normalize_path(path.as_ref()),
+            exact: false,
+        }
+    }
+
+    pub fn exact(path: impl AsRef<str>) -> Self {
+        Self {
+            prefix: normalize_path(path.as_ref()),
+            exact: true,
         }
     }
 
     pub fn matches(&self, path: &str) -> bool {
         let path = normalize_path(path);
+
+        if self.exact {
+            return path == self.prefix;
+        }
 
         if self.prefix == "/" {
             return true;
@@ -111,6 +124,10 @@ impl PathMatch {
 
     pub fn as_str(&self) -> &str {
         &self.prefix
+    }
+
+    pub fn is_exact(&self) -> bool {
+        self.exact
     }
 }
 
@@ -130,13 +147,13 @@ impl RouteMatch {
             && self.paths.iter().any(|candidate| candidate.matches(path))
     }
 
-    pub fn best_path_specificity(&self, path: &str) -> usize {
+    pub fn best_path_specificity(&self, path: &str) -> (usize, bool) {
         self.paths
             .iter()
             .filter(|candidate| candidate.matches(path))
-            .map(|candidate| candidate.as_str().len())
+            .map(|candidate| (candidate.as_str().len(), candidate.is_exact()))
             .max()
-            .unwrap_or(0)
+            .unwrap_or((0, false))
     }
 }
 
@@ -2325,6 +2342,47 @@ mod tests {
         let path = PathMatch::prefix("/api");
 
         assert!(!path.matches("/apix"));
+    }
+
+    #[test]
+    fn exact_path_matches_only_the_declared_path_and_wins_a_same_length_prefix_tie() {
+        let exact = PathMatch::exact("/health");
+        assert!(exact.matches("/health"));
+        assert!(!exact.matches("/health/check"));
+
+        let snapshot = snapshot(vec![
+            route("prefix", "example.com", "/health", 10, true),
+            Route {
+                id: RouteId::new("exact"),
+                route_match: RouteMatch::new(
+                    vec![HostMatch::exact("example.com")],
+                    vec![PathMatch::exact("/health")],
+                ),
+                service_id: ServiceId::new("service"),
+                priority: 10,
+                enabled: true,
+                redirect_http_to_https: false,
+                certificate_resolver_id: None,
+                certificate_ref: None,
+            },
+        ]);
+
+        assert_eq!(
+            snapshot
+                .select_route("example.com", "/health")
+                .unwrap()
+                .id
+                .as_str(),
+            "exact"
+        );
+        assert_eq!(
+            snapshot
+                .select_route("example.com", "/health/check")
+                .unwrap()
+                .id
+                .as_str(),
+            "prefix"
+        );
     }
 
     #[test]

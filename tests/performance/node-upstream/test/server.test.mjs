@@ -219,6 +219,10 @@ test("route fixture identifies only the configured upstream base path", async ()
       JSON.parse((await request(`${baseUrl}/route/api/routing/route-check`)).body.toString("utf8")),
       { route: "api" },
     );
+    assert.deepEqual(
+      JSON.parse((await request(`${baseUrl}/route/exact/routing/exact/route-check`)).body.toString("utf8")),
+      { route: "exact" },
+    );
     assert.equal((await request(`${baseUrl}/route/unknown`)).statusCode, 404);
   });
 });

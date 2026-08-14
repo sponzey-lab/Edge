@@ -78,6 +78,7 @@ url = "http://127.0.0.1:3001"
 name = "example"
 hosts = ["localhost"]
 paths = ["/"]
+exact_paths = ["/health"] # Optional exact paths; `paths` retain prefix semantics.
 service = "example"
 priority = 0 # Higher values win before path-prefix specificity.
 certificate_ref = "cert-example"

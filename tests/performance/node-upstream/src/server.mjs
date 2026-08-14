@@ -153,11 +153,11 @@ function attachWebSocketEcho(socket, initialData) {
 
 function handleRequest(request, response, metrics) {
   let pathname = new URL(request.url, "http://node-upstream.invalid").pathname;
-  const routeName = pathname.match(/^\/route\/(default|api)(?=\/|$)/)?.[1];
+  const routeName = pathname.match(/^\/route\/(default|api|exact)(?=\/|$)/)?.[1];
   if (routeName) {
     pathname = pathname.slice(`/route/${routeName}`.length) || "/";
   }
-  if (pathname.endsWith("/route-check")) {
+  if (pathname.endsWith("/route-check") || pathname.includes("/route-check/")) {
     sendJson(response, 200, { route: routeName ?? "default" });
     return;
   }
@@ -268,7 +268,7 @@ export function createUpstreamServer({
   server.on("connection", (socket) => observeConnection(socket, metrics));
   server.on("upgrade", (request, socket, head) => {
     let pathname = new URL(request.url, "http://node-upstream.invalid").pathname;
-    const routeName = pathname.match(/^\/route\/(default|api)(?=\/|$)/)?.[1];
+    const routeName = pathname.match(/^\/route\/(default|api|exact)(?=\/|$)/)?.[1];
     if (routeName) {
       pathname = pathname.slice(`/route/${routeName}`.length) || "/";
     }

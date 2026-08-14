@@ -825,11 +825,22 @@ pub fn render_mvp_config_snapshot(snapshot: &ConfigSnapshot) -> String {
                     .route_match
                     .paths
                     .iter()
+                    .filter(|path| !path.is_exact())
                     .map(PathMatch::as_str)
                     .collect::<Vec<_>>()
                     .as_slice()
             )
         ));
+        let exact_paths = route
+            .route_match
+            .paths
+            .iter()
+            .filter(|path| path.is_exact())
+            .map(PathMatch::as_str)
+            .collect::<Vec<_>>();
+        if !exact_paths.is_empty() {
+            output.push_str(&format!("exact_paths = [{}]\n", quoted_array(&exact_paths)));
+        }
         output.push_str(&format!("service = \"{}\"\n", route.service_id));
         output.push_str(&format!("priority = {}\n", route.priority));
         output.push_str(&format!("enabled = {}\n", route.enabled));
@@ -1064,10 +1075,18 @@ fn apply_mvp_config_value(
         }
         ("routes", "paths") => {
             if let Some(route) = draft.routes.last_mut() {
-                route.route_match.paths = parse_string_array(value)?
-                    .iter()
-                    .map(PathMatch::prefix)
-                    .collect();
+                route
+                    .route_match
+                    .paths
+                    .extend(parse_string_array(value)?.iter().map(PathMatch::prefix));
+            }
+        }
+        ("routes", "exact_paths") => {
+            if let Some(route) = draft.routes.last_mut() {
+                route
+                    .route_match
+                    .paths
+                    .extend(parse_string_array(value)?.iter().map(PathMatch::exact));
             }
         }
         ("routes", "service") => {
@@ -3536,6 +3555,23 @@ mod tests {
         assert!(parsed.unknown_fields.is_empty());
         assert_eq!(parsed.snapshot.routes[0].priority, 42);
         assert!(render_mvp_config_snapshot(&parsed.snapshot).contains("priority = 42"));
+    }
+
+    #[test]
+    fn parses_and_renders_exact_route_paths_without_changing_prefix_paths() {
+        let source = include_str!("../../../examples/minimal.toml").replace(
+            "paths = [\"/\"]",
+            "paths = [\"/api\"]\nexact_paths = [\"/health\"]",
+        );
+        let parsed = parse_mvp_config(&source, ConfigRevisionId::new("exact-path")).unwrap();
+
+        assert!(parsed.unknown_fields.is_empty());
+        assert!(parsed.snapshot.routes[0].route_match.paths[0].matches("/api/child"));
+        assert!(parsed.snapshot.routes[0].route_match.paths[1].matches("/health"));
+        assert!(!parsed.snapshot.routes[0].route_match.paths[1].matches("/health/child"));
+        let rendered = render_mvp_config_snapshot(&parsed.snapshot);
+        assert!(rendered.contains("paths = [\"/api\"]"));
+        assert!(rendered.contains("exact_paths = [\"/health\"]"));
     }
 
     #[test]
