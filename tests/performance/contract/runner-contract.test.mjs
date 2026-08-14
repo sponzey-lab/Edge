@@ -43,3 +43,12 @@ test("runner keeps enough bounded process output for a full smoke summary", () =
   assert.match(source, /maxBuffer: 16 \* 1024 \* 1024/);
   assert.match(source, /renameSync\(tempDir, finalDir\)/);
 });
+
+test("resource sampler normalizes Docker CPU and memory values", async () => {
+  const { parseDockerStats } = await import(runner);
+  assert.deepEqual(
+    parseDockerStats('{"CPUPerc":"12.50%","MemUsage":"3.5MiB / 1GiB"}', "2026-08-14T00:00:00.000Z"),
+    { sampled_at: "2026-08-14T00:00:00.000Z", cpu_percent: 12.5, memory_usage_bytes: 3670016 },
+  );
+  assert.throws(() => parseDockerStats('{"CPUPerc":"bad","MemUsage":"none"}', "now"), /invalid Docker stats sample/);
+});
