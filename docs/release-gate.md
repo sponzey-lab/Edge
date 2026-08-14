@@ -32,6 +32,22 @@ the deleted helper set. The evidence must record the source/build identity, plat
 commands, runtime configuration, Admin/API or proxy observations, memory/resource measurements where
 applicable, pass/fail criteria, and secret-exclusion review.
 
+## Supplemental Performance Characterization
+
+The current release Compose performance boundary is separate from the canonical
+memory/release gate. Its automatic smoke and manual profiles use the production
+Edge image but do not satisfy Phase 011's 7,200-second/platform evidence.
+Record only audited, non-partial artifacts:
+
+```bash
+node tests/performance/bin/run.mjs smoke
+node tests/performance/bin/audit.mjs artifacts/performance/<run-id>
+```
+
+Baseline, stress, and soak are manual characterization profiles; until a
+separate approval defines regression limits, their numeric results are not
+merge or release blocking thresholds.
+
 The historical collector used an explicit `SPONZEY_EVIDENCE_BUILD_OR_COMMIT` first, then git commit
 metadata, then a `source-tree-sha256:<digest>` value derived from release-relevant source files when
 git metadata was unavailable. Preserve that identity discipline in any replacement release process.

@@ -20,23 +20,34 @@ reviewer:
 
 ## Automatic Gate Evidence
 
-Use `scripts/collect_release_evidence.sh` to collect this section for the
-target release build. Attach the generated `summary.md` and full transcripts.
-Validate the generated directory with `scripts/check_release_evidence.sh`.
-The collector uses an explicit `SPONZEY_EVIDENCE_BUILD_OR_COMMIT` first, then
-git commit metadata, then a `source-tree-sha256:<digest>` value derived from
-release-relevant source files when git metadata is unavailable. If the release
-build uses an external build id, pass it explicitly:
+The historical `scripts/collect_release_evidence.sh` and
+`scripts/check_release_evidence.sh` helpers are no longer present. Record the
+current source-level commands and their full transcripts for the target build:
 
 ```bash
-SPONZEY_EVIDENCE_BUILD_OR_COMMIT=build-id ./scripts/collect_release_evidence.sh
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace -- --test-threads=1
 ```
 
-For MVP completion, validate the automatic evidence directory:
+Use `git rev-parse HEAD` and `git rev-parse HEAD^{tree}` for build/source
+identity. A new release process must validate its own evidence structure; do
+not claim this template or removed helpers performed that validation.
+
+## Supplemental Performance Evidence
+
+The Compose performance environment is functional characterization, not a
+replacement for the canonical Phase 011 release/memory gate. Attach a completed
+audited run only when it matches the release identity:
 
 ```bash
-./scripts/check_release_evidence.sh artifacts/release-evidence/RELEASE_ID
+node tests/performance/bin/run.mjs smoke
+node tests/performance/bin/audit.mjs artifacts/performance/<run-id>
 ```
+
+For manual characterization, retain the three-run baseline summary or selected
+stress/soak summary with its `metadata.json`, `summary.json`, resource samples,
+and audit output. Never attach `*.partial` output or generated test PKI.
 
 For Post-MVP Let's Encrypt readiness, validate automatic and ACME evidence
 directories together. They must be separate physical evidence directories, not
