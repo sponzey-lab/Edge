@@ -205,10 +205,7 @@ export function createUpstreamServer({
     });
     handleRequest(request, response, metrics);
   });
-  server.on("connection", (socket) => {
-    metrics.connectionOpened();
-    socket.on("close", () => metrics.connectionClosed());
-  });
+  server.on("connection", (socket) => observeConnection(socket, metrics));
   server.on("upgrade", (request, socket, head) => {
     const pathname = new URL(request.url, "http://node-upstream.invalid").pathname;
     const key = request.headers["sec-websocket-key"];
@@ -233,6 +230,12 @@ export function createUpstreamServer({
     attachWebSocketEcho(socket, head);
   });
   return server;
+}
+
+export function observeConnection(socket, metrics) {
+  metrics.connectionOpened();
+  socket.on("error", () => {});
+  socket.on("close", () => metrics.connectionClosed());
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

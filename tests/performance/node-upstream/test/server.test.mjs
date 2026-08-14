@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import http from "node:http";
 import net from "node:net";
 import test from "node:test";
 
 import { createMetrics } from "../src/observability.mjs";
-import { createUpstreamServer, payloadPresets } from "../src/server.mjs";
+import { createUpstreamServer, observeConnection, payloadPresets } from "../src/server.mjs";
 
 async function withServer(run, options = {}) {
   const server = createUpstreamServer(options);
@@ -188,6 +189,16 @@ test("reset fixture terminates the HTTP transport without a response", async () 
       (error) => error.code === "ECONNRESET" || error.message === "socket hang up",
     );
   });
+});
+
+test("expected peer resets do not terminate the upstream process", () => {
+  const socket = new EventEmitter();
+  const metrics = createMetrics();
+  observeConnection(socket, metrics);
+
+  assert.doesNotThrow(() => socket.emit("error", Object.assign(new Error("reset"), { code: "ECONNRESET" })));
+  socket.emit("close");
+  assert.equal(metrics.snapshot().activeConnections, 0);
 });
 
 test("WebSocket echo accepts one masked text frame and closes cleanly", async () => {

@@ -1,0 +1,28 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const smoke = path.join(repositoryRoot, "tests/performance/k6/smoke.js");
+
+test("k6 smoke workload targets Edge only and keeps expected failures explicit", () => {
+  const source = readFileSync(smoke, "utf8");
+
+  assert.match(source, /duration:\s*"30s"/);
+  assert.match(source, /http:\/\/edge\.test:8080/);
+  assert.match(source, /https:\/\/edge\.test:8443/);
+  assert.match(source, /\/payload\/small/);
+  assert.match(source, /\/health/);
+  assert.match(source, /\/status\/400/);
+  assert.match(source, /\/status\/500/);
+  assert.match(source, /\/delay\/short/);
+  assert.match(source, /\/stream\/chunks/);
+  assert.match(source, /\/reset/);
+  assert.match(source, /\/ws\/echo/);
+  assert.match(source, /expectedStatuses\(0, 502\)/);
+  assert.match(source, /active_connections === 0/);
+  assert.match(source, /used_payload_bytes === 0/);
+  assert.doesNotMatch(source, /node-upstream|:3000/);
+});

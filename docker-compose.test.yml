@@ -94,7 +94,6 @@ services:
     secrets:
       - source: performance-admin-credential
         target: admin-credential.secret
-        mode: 0400
     logging: *performance_logging
 
 volumes:
