@@ -94,6 +94,13 @@ p50/p95/p99, error, bytes, and CPU/memory distribution with first/last memory de
 distribution from exactly three runs. `*.partial` directories represent failed or interrupted runs
 and must not be promoted as a baseline.
 
+Before reusing a completed artifact, run the same fail-closed audit used by the performance
+boundary:
+
+```bash
+node tests/performance/bin/audit.mjs artifacts/performance/<run-id>
+```
+
 To stop the release performance services while preserving ignored evidence, run:
 
 ```bash
