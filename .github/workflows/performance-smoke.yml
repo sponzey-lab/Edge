@@ -26,8 +26,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.14.0
-          cache: npm
-          cache-dependency-path: tests/performance/node-upstream/package-lock.json
       - name: Validate Compose model
         run: docker compose --profile performance -f docker-compose.test.yml config
       - name: Run deterministic performance contracts

@@ -21,4 +21,5 @@ test("performance workflow uploads only allow-listed non-secret evidence", () =>
   assert.match(workflow, /artifacts\/performance\/\*\/edge-resource-samples\.json/);
   assert.doesNotMatch(workflow, /edge-perf-runtime/);
   assert.doesNotMatch(workflow, /docker\.sock/);
+  assert.doesNotMatch(workflow, /cache-dependency-path/);
 });
