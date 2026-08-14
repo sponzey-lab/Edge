@@ -209,6 +209,20 @@ test("body fixture returns only the fixed POST body digest and rejects oversized
   });
 });
 
+test("route fixture identifies only the configured upstream base path", async () => {
+  await withServer(async (baseUrl) => {
+    assert.deepEqual(
+      JSON.parse((await request(`${baseUrl}/route/default/route-check`)).body.toString("utf8")),
+      { route: "default" },
+    );
+    assert.deepEqual(
+      JSON.parse((await request(`${baseUrl}/route/api/routing/route-check`)).body.toString("utf8")),
+      { route: "api" },
+    );
+    assert.equal((await request(`${baseUrl}/route/unknown`)).statusCode, 404);
+  });
+});
+
 test("status and delay fixtures accept only closed presets", async () => {
   await withServer(async (baseUrl) => {
     for (const statusCode of [200, 400, 500]) {

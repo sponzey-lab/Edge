@@ -152,7 +152,15 @@ function attachWebSocketEcho(socket, initialData) {
 }
 
 function handleRequest(request, response, metrics) {
-  const pathname = new URL(request.url, "http://node-upstream.invalid").pathname;
+  let pathname = new URL(request.url, "http://node-upstream.invalid").pathname;
+  const routeName = pathname.match(/^\/route\/(default|api)(?=\/|$)/)?.[1];
+  if (routeName) {
+    pathname = pathname.slice(`/route/${routeName}`.length) || "/";
+  }
+  if (pathname.endsWith("/route-check")) {
+    sendJson(response, 200, { route: routeName ?? "default" });
+    return;
+  }
   if (pathname === "/inspect/body" && request.method === "POST") {
     inspectRequestBody(request, response);
     return;
@@ -259,7 +267,11 @@ export function createUpstreamServer({
   });
   server.on("connection", (socket) => observeConnection(socket, metrics));
   server.on("upgrade", (request, socket, head) => {
-    const pathname = new URL(request.url, "http://node-upstream.invalid").pathname;
+    let pathname = new URL(request.url, "http://node-upstream.invalid").pathname;
+    const routeName = pathname.match(/^\/route\/(default|api)(?=\/|$)/)?.[1];
+    if (routeName) {
+      pathname = pathname.slice(`/route/${routeName}`.length) || "/";
+    }
     const key = request.headers["sec-websocket-key"];
     if (
       request.method !== "GET"

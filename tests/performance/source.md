@@ -10,5 +10,5 @@ not a Rust workspace member and its outputs do not become runtime policy or Phas
 | `bin/prepare-pki-runtime.mjs` | Generates and deletes fixed-SAN PKI, Edge certificate-store seed, and client trust at an explicit artifact path. | Requires `artifacts/performance/`, keeps private keys owner-only, and never prints PEM material. |
 | `node-upstream/` | Deterministic upstream application and dashboard. | See [`node-upstream/source.md`](node-upstream/source.md); no Edge config mutation. |
 | `k6/` | Versioned functional/performance workloads, including Admin lifecycle and the 30-second HTTP/HTTPS/WebSocket/header/POST smoke profile. | One-shot load process; targets Edge only; its runtime credential is a read-only Compose secret. |
-| `config/` | Non-secret Edge test configuration and PKI generation profile. | Generated keys and runtime values stay outside source control. |
+| `config/` | Non-secret Edge test configuration, including literal-upstream Host/prefix/priority route fixtures, and PKI generation profile. | Generated keys and runtime values stay outside source control. |
 | `results/` | Small approved baseline schemas and fixtures. | Raw run data remains under ignored `artifacts/performance/`. |

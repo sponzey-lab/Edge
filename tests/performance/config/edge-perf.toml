@@ -30,9 +30,32 @@ name = "node-upstream"
 [[services.upstreams]]
 url = "http://172.30.0.3:3000"
 
+[[services]]
+name = "node-api"
+
+[[services.upstreams]]
+url = "http://172.30.0.3:3000/route/api"
+
 [[routes]]
 name = "edge-test-route"
 hosts = ["edge.test"]
 paths = ["/"]
 service = "node-upstream"
+priority = 0
+certificate_ref = "edge-test-cert"
+
+[[routes]]
+name = "edge-api-route"
+hosts = ["edge.test"]
+paths = ["/routing"]
+service = "node-api"
+priority = 20
+certificate_ref = "edge-test-cert"
+
+[[routes]]
+name = "edge-api-priority-control"
+hosts = ["edge.test"]
+paths = ["/routing/priority"]
+service = "node-upstream"
+priority = 10
 certificate_ref = "edge-test-cert"

@@ -36,6 +36,11 @@ function getExpected(url, statusCode) {
   return http.get(url, { responseCallback: http.expectedStatuses(statusCode) });
 }
 
+function responseHeader(response, name) {
+  const key = Object.keys(response.headers).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+  return key ? response.headers[key] : undefined;
+}
+
 function verifyWebSocket() {
   let echoed = false;
   const result = ws.connect("ws://edge.test:8080/ws/echo", {}, (socket) => {
@@ -57,13 +62,13 @@ export default function () {
   const small = http.get(`${httpBaseUrl}/payload/small`);
   requireCheck(small, {
     "small payload succeeds": (response) => response.status === 200,
-    "small payload digest matches": (response) => response.headers["X-Fixture-Digest"] === fixtureDigest,
+    "small payload digest matches": (response) => responseHeader(response, "X-Fixture-Digest") === fixtureDigest,
   }, "small payload");
 
   const secure = http.get(`${httpsBaseUrl}/payload/small`);
   requireCheck(secure, {
     "HTTPS payload succeeds": (response) => response.status === 200,
-    "HTTPS payload digest matches": (response) => response.headers["X-Fixture-Digest"] === fixtureDigest,
+    "HTTPS payload digest matches": (response) => responseHeader(response, "X-Fixture-Digest") === fixtureDigest,
   }, "HTTPS payload");
 
   requireCheck(getExpected(`${httpBaseUrl}/status/400`, 400), { "expected 400 is preserved": (response) => response.status === 400 }, "status 400");
@@ -89,6 +94,19 @@ export default function () {
     "POST body succeeds": (response) => response.status === 200,
     "POST body digest matches": (response) => JSON.parse(response.body).digest === requestBodyDigest,
   }, "body projection");
+  requireCheck(http.get(`${httpBaseUrl}/route-check`), {
+    "default Host route is selected": (response) => response.status === 200 && JSON.parse(response.body).route === "default",
+  }, "default route");
+  requireCheck(http.get(`${httpBaseUrl}/routing/route-check`), {
+    "more specific prefix route is selected": (response) => response.status === 200 && JSON.parse(response.body).route === "api",
+  }, "prefix route");
+  requireCheck(http.get(`${httpBaseUrl}/routing/priority/route-check`), {
+    "higher priority route wins over longer prefix": (response) => response.status === 200 && JSON.parse(response.body).route === "api",
+  }, "priority route");
+  requireCheck(http.get(`${httpBaseUrl}/route-check`, {
+    headers: { Host: "unmatched.edge.test" },
+    responseCallback: http.expectedStatuses(404),
+  }), { "unmatched Host is rejected": (response) => response.status === 404 }, "host mismatch");
   requireCheck(http.get(`${httpBaseUrl}/stream/chunks`), { "chunk stream is preserved": (response) => response.status === 200 && response.body === "chunk-1\nchunk-2\nchunk-3\n" }, "stream");
   requireCheck(
     http.get(`${httpBaseUrl}/reset`, { responseCallback: http.expectedStatuses(0, 502) }),

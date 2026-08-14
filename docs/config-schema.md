@@ -79,6 +79,7 @@ name = "example"
 hosts = ["localhost"]
 paths = ["/"]
 service = "example"
+priority = 0 # Higher values win before path-prefix specificity.
 certificate_ref = "cert-example"
 enabled = true
 redirect_http_to_https = false

@@ -831,6 +831,7 @@ pub fn render_mvp_config_snapshot(snapshot: &ConfigSnapshot) -> String {
             )
         ));
         output.push_str(&format!("service = \"{}\"\n", route.service_id));
+        output.push_str(&format!("priority = {}\n", route.priority));
         output.push_str(&format!("enabled = {}\n", route.enabled));
         if let Some(certificate_ref) = &route.certificate_ref {
             output.push_str(&format!("certificate_ref = \"{}\"\n", certificate_ref));
@@ -1074,6 +1075,11 @@ fn apply_mvp_config_value(
                 route.service_id = ServiceId::new(parse_string(value)?);
             }
         }
+        ("routes", "priority") => {
+            if let Some(route) = draft.routes.last_mut() {
+                route.priority = parse_i32(value)?;
+            }
+        }
         ("routes", "enabled") => {
             if let Some(route) = draft.routes.last_mut() {
                 route.enabled = parse_bool(value)?;
@@ -1166,6 +1172,15 @@ fn parse_usize(value: &str) -> Result<usize, AppError> {
         AppError::new(
             ErrorCode::ConfigSchemaVersionMissing,
             format!("expected unsigned integer: {value}"),
+        )
+    })
+}
+
+fn parse_i32(value: &str) -> Result<i32, AppError> {
+    value.trim().parse::<i32>().map_err(|_| {
+        AppError::new(
+            ErrorCode::ConfigSchemaVersionMissing,
+            format!("expected signed integer: {value}"),
         )
     })
 }
@@ -3508,6 +3523,19 @@ mod tests {
         assert!(ConfigValidator::default()
             .validate_source(&parsed)
             .is_valid());
+    }
+
+    #[test]
+    fn parses_and_renders_route_priority() {
+        let source = include_str!("../../../examples/minimal.toml").replace(
+            "service = \"example\"",
+            "service = \"example\"\npriority = 42",
+        );
+        let parsed = parse_mvp_config(&source, ConfigRevisionId::new("priority")).unwrap();
+
+        assert!(parsed.unknown_fields.is_empty());
+        assert_eq!(parsed.snapshot.routes[0].priority, 42);
+        assert!(render_mvp_config_snapshot(&parsed.snapshot).contains("priority = 42"));
     }
 
     #[test]
