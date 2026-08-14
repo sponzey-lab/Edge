@@ -16,6 +16,7 @@ export const payloadPresets = Object.freeze({
 
 const delayPresetsMilliseconds = Object.freeze({
   short: 25,
+  slow: 100,
 });
 const maximumInspectableBodyBytes = 4096;
 const webSocketAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -206,7 +207,7 @@ function handleRequest(request, response, metrics) {
     return;
   }
 
-  const delayName = pathname.match(/^\/delay\/(short)$/)?.[1];
+  const delayName = pathname.match(/^\/delay\/(short|slow)$/)?.[1];
   if (delayName) {
     setTimeout(() => sendJson(response, 200, { delay: delayName }), delayPresetsMilliseconds[delayName]);
     return;

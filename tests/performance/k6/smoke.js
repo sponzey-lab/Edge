@@ -1,5 +1,5 @@
 import http from "k6/http";
-import { check, fail } from "k6";
+import { check, fail, sleep } from "k6";
 import ws from "k6/ws";
 
 const httpBaseUrl = "http://edge.test:8080";
@@ -55,6 +55,16 @@ function verifyWebSocket() {
   if (!echoed) {
     fail("WebSocket echo failed");
   }
+}
+
+export function setup() {
+  const clientTimeout = http.get(`${httpBaseUrl}/delay/slow`, {
+    timeout: "10ms",
+    responseCallback: http.expectedStatuses(0),
+  });
+  requireCheck(clientTimeout, {
+    "slow upstream is an expected client timeout": (response) => response.status === 0,
+  }, "client timeout");
 }
 
 export default function () {
@@ -123,6 +133,7 @@ export default function () {
 }
 
 export function teardown() {
+  sleep(0.15);
   const status = http.get("http://127.0.0.1:9443/api/v1/status");
   requireCheck(status, {
     "Edge status is healthy after smoke": (response) => response.status === 200,
