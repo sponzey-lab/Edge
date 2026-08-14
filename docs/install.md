@@ -73,6 +73,10 @@ The image packages:
 - `/etc/sponzey-edge/current.toml`
 - `/usr/share/sponzey-edge/admin-web`
 
+The production Compose file and reusable test container are separate contracts. For development,
+start `docker-compose.test.yml` and run checks through its long-lived `edge-test` service; do not
+mount production data or secrets into it. See `docs/testing.md` for the exact commands.
+
 ## Admin Password Bootstrap
 
 The current MVP runtime loads the admin password hash once at startup through

@@ -269,6 +269,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --test-threads=1
 ```
 
+반복 개발 검증은 `Dockerfile.test`와 `docker-compose.test.yml`의 상시 `edge-test` 서비스에서도
+동일한 세 명령으로 실행할 수 있다. source bind mount와 Cargo registry/git/target named cache만
+사용하고 host port, 운영 data와 secret은 mount하지 않는다. 상세 lifecycle과 경계는
+`docs/testing.md`가 소유한다. 이 Linux container 결과는 실제 production image/runtime 및
+platform별 memory evidence를 대체하지 않는다.
+
 삭제된 `scripts/` 기반 smoke, release collector, evidence validator는 더 이상 현재 실행
 경로가 아니다. Phase 010/011 승인 증적에 기록된 script transcript는 과거 checkpoint의
 source-bound evidence로만 보존한다. 새로운 release candidate를 승인하려면 삭제된 helper를

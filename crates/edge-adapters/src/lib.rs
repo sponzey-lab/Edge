@@ -6082,8 +6082,9 @@ mod tests {
     }
 
     fn temp_root(name: &str) -> PathBuf {
-        PathBuf::from("target/test-data").join(format!(
-            "sponzey-edge-{name}-{}",
+        std::env::temp_dir().join(format!(
+            "sponzey-edge-{name}-{}-{}",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

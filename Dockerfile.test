@@ -1,0 +1,18 @@
+FROM rust:1.94-bookworm
+
+RUN rustup component add clippy rustfmt \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        curl \
+        netcat-openbsd \
+        openssl \
+        procps \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+ENV CARGO_TERM_COLOR=always
+ENV RUST_BACKTRACE=1
+
+CMD ["sleep", "infinity"]

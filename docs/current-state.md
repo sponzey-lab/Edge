@@ -430,16 +430,21 @@ Let's Encrypt 관련 adapter와 HTTP-01/fake ACME 테스트는 남아 있지만 
 ## Verification Commands
 
 ```bash
-./scripts/check.sh
-./scripts/smoke_mvp.sh
-./scripts/smoke_admin_web.sh
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace -- --test-threads=1
 ```
 
-2026-07-15 Phase 009 시작 기준선에는 fmt, clippy warnings-as-errors, 551개
-workspace tests, architecture/docs gates, Admin Web, Docker Compose, health,
-encrypted recovery/private-PKI 및 MVP smoke가 통과했다. 새 release는 현재
-source에서 위 명령을 다시 실행하고 fresh evidence를 수집해야 한다. 과거
-숫자는 현재 source의 통과를 대신하지 않는다.
+동일한 source-level gate는 `docker-compose.test.yml`의 상시 `edge-test` 서비스에서도 실행할
+수 있다. 컨테이너는 source를 `/workspace`에 mount하고 Cargo registry/git/target cache만 named
+volume으로 유지하며 host port, 운영 data와 secret을 mount하지 않는다. 정확한 명령과 lifecycle은
+`docs/testing.md`를 따른다. 컨테이너 통과는 Linux source-level 검증이며 실제 production image,
+Admin API/UI, TLS, backup/restore와 platform별 memory evidence를 대체하지 않는다.
+
+2026-07-15 Phase 009 시작 기준선에는 fmt, clippy warnings-as-errors, 551개 workspace tests,
+architecture/docs gates, Admin Web, Docker Compose, health, encrypted recovery/private-PKI 및 MVP
+smoke가 통과했다. 해당 script 기반 결과는 과거 evidence이며 새 release는 현재 source에서 위
+Cargo 명령과 필요한 runtime 검증을 다시 실행하고 fresh evidence를 수집해야 한다.
 
 ## Phase 011 Task 048 Memory Manifest
 

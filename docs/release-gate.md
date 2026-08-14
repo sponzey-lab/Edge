@@ -14,6 +14,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --test-threads=1
 ```
 
+The same source-level gate can run in the persistent test-only container:
+
+```bash
+docker compose -f docker-compose.test.yml up -d --build
+docker compose -f docker-compose.test.yml exec edge-test \
+  bash -c 'cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -- --test-threads=1'
+```
+
+`docker compose -f docker-compose.test.yml config` is the test-container configuration contract
+check. A pass inside this container is Linux source-level evidence only; it does not replace the
+production image runtime smoke or platform-specific memory/resource evidence. The lifecycle and
+secret-isolation rules are defined in `docs/testing.md`.
+
 For a new release candidate, collect fresh evidence manually or with a newly reviewed gate outside
 the deleted helper set. The evidence must record the source/build identity, platform, exact
 commands, runtime configuration, Admin/API or proxy observations, memory/resource measurements where

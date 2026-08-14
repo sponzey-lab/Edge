@@ -112,6 +112,19 @@ docker compose up --build
 Runtime 경로, 권한, backup, 배포에 관한 자세한 내용은
 [`docs/install.md`](docs/install.md)와 [`docs/deployment.md`](docs/deployment.md)를 참고하십시오.
 
+### 재사용 가능한 테스트 컨테이너
+
+테스트 컨테이너를 한 번 시작한 뒤 Cargo dependency와 target cache를 유지하며 반복 사용합니다.
+
+```bash
+docker compose -f docker-compose.test.yml up -d --build
+docker compose -f docker-compose.test.yml exec edge-test \
+  bash -c 'cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -- --test-threads=1'
+```
+
+테스트 컨테이너는 host port를 공개하지 않고 운영 data나 secret을 mount하지 않습니다. 집중
+테스트, 중지·재시작 및 cache 초기화 방법은 [`docs/testing.md`](docs/testing.md)를 참고하십시오.
+
 ## 사용법
 
 ### 1. Upstream 준비

@@ -116,6 +116,19 @@ docker compose up --build
 See [`docs/install.md`](docs/install.md) and [`docs/deployment.md`](docs/deployment.md) for
 runtime paths, permissions, backup, and deployment details.
 
+### Reusable Test Container
+
+Start the isolated test container once and reuse its Cargo dependency and target caches:
+
+```bash
+docker compose -f docker-compose.test.yml up -d --build
+docker compose -f docker-compose.test.yml exec edge-test \
+  bash -c 'cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -- --test-threads=1'
+```
+
+The test container exposes no host port and does not mount runtime data or secrets. See
+[`docs/testing.md`](docs/testing.md) for focused tests, lifecycle commands, and safety boundaries.
+
 ## Usage
 
 ### 1. Prepare An Upstream

@@ -1,0 +1,31 @@
+name: sponzey-edge-test
+
+services:
+  edge-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    init: true
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+    environment:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    volumes:
+      - .:/workspace
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - cargo-target:/workspace/target
+    healthcheck:
+      test: ["CMD-SHELL", "rustc --version >/dev/null && cargo --version >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  cargo-target:

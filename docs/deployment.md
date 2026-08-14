@@ -262,6 +262,9 @@ manual evidence rather than deleted script wrappers:
 Before release, run `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo test --workspace -- --test-threads=1`, then record the required runtime, Admin API,
 Docker Compose, TLS, backup/restore, audit, and memory/resource observations for the candidate.
+The three Cargo commands may run in the reusable `edge-test` container documented in
+`docs/testing.md`; its named caches improve iteration speed but do not replace actual production
+image startup, Admin/API, TLS, backup/restore, or platform-specific release evidence.
 See `docs/current-state.md` for supported and deferred scope.
 
 ## Runtime Manual Certificate Import
