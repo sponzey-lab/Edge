@@ -151,6 +151,13 @@ jobs:
           tags: ghcr.io/sponzey-lab/sponzey-edge:${{ github.ref_name }}
           labels: org.opencontainers.image.source=https://github.com/sponzey-lab/Sponzey-Edge
 
+      - name: Verify published GHCR image is publicly pullable
+        if: steps.release_tag.outputs.publish == 'true'
+        shell: bash
+        run: |
+          docker logout ghcr.io || true
+          docker pull ghcr.io/sponzey-lab/sponzey-edge:${GITHUB_REF_NAME}@${{ steps.image.outputs.digest }}
+
       - name: Assemble release assets
         if: steps.release_tag.outputs.publish == 'true'
         shell: bash

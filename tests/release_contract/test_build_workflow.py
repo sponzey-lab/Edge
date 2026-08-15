@@ -40,6 +40,18 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertIn("tools/release/assemble_release_artifacts.py", self.workflow)
         self.assertIn("tools/release/validate_release_manifest.py", self.workflow)
 
+    def test_tag_release_proves_the_digest_is_pullable_without_registry_credentials(self) -> None:
+        self.assertIn("Verify published GHCR image is publicly pullable", self.workflow)
+        self.assertIn("docker logout ghcr.io || true", self.workflow)
+        self.assertIn(
+            "docker pull ghcr.io/sponzey-lab/sponzey-edge:${GITHUB_REF_NAME}@${{ steps.image.outputs.digest }}",
+            self.workflow,
+        )
+        self.assertLess(
+            self.workflow.index("Verify published GHCR image is publicly pullable"),
+            self.workflow.index("Assemble release assets"),
+        )
+
     def test_linux_archives_include_the_systemd_install_assets(self) -> None:
         self.assertIn("cp packaging/systemd/sponzey-edge.service dist/systemd/", self.workflow)
         self.assertIn("cp packaging/systemd/install.sh packaging/systemd/uninstall.sh packaging/systemd/upgrade-helper dist/systemd/", self.workflow)
