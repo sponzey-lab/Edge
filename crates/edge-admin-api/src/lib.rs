@@ -6,28 +6,30 @@
 use std::collections::BTreeMap;
 
 use edge_application::{
-    add_proxy_host, certificate_status, config_activation_state, diff_config,
-    import_manual_certificate_and_install, issue_certificate_for_ref_and_install,
+    add_proxy_host, certificate_status, config_activation_state, default_support_bundle_bounds,
+    diff_config, import_manual_certificate_and_install, issue_certificate_for_ref_and_install,
     issue_certificate_for_ref_with_http01_and_install, parse_mvp_config, query_audit,
     remove_proxy_host, render_mvp_config_snapshot, renew_certificate_for_ref_and_install,
     update_proxy_host, AccessLogEvent, CertificateIssueOutcome, CertificateIssuer,
-    CertificateRenewRequest, CertificateStatus, ConfigActivationState, ConfigDiff, ConfigLifecycle,
-    ConfigValidator, ManualCertificateImportOutcome, ManualCertificateImportRequest,
-    MetricSeriesValue, MetricSnapshot, MetricSnapshotReaderPort, RecentErrorEvent,
-    ValidationReport,
+    CertificateRenewRequest, CertificateStatus, CollectSupportBundleUseCase, ConfigActivationState,
+    ConfigDiff, ConfigLifecycle, ConfigValidator, ManualCertificateImportOutcome,
+    ManualCertificateImportRequest, MetricSeriesValue, MetricSnapshot, MetricSnapshotReaderPort,
+    RecentErrorEvent, ValidationReport,
 };
 use edge_domain::{
     AppError, AuditAction, AuditAdmissionState, AuditCursor, AuditOutcome, AuditPage, AuditQuery,
     AuditTargetKind, CertificateRef, ConfigRevisionId, ConfigSnapshot, ErrorCode,
     HealthAvailabilitySnapshot, HealthCheckPolicy, HostMatch, HttpHealthCheckPolicy,
-    PassiveHealthMode, PathMatch, ProxyHost, ProxyHostId, RetryPolicy, Route, TrustBundleRef,
-    Upstream, UpstreamAdministrativeState, UpstreamAvailability, UpstreamId, ValidationError,
+    OperationalLifecycle, PassiveHealthMode, PathMatch, ProbeStatus, ProxyHost, ProxyHostId,
+    RetryPolicy, Route, SupportBundleArtifact, TrustBundleRef, Upstream,
+    UpstreamAdministrativeState, UpstreamAvailability, UpstreamId, ValidationError,
 };
 use edge_ports::{
     AcmeClient, AcmeOrderRequest, AuditLedgerReader, AuditSink, CertificateMaterialValidator,
     CertificateStore, ConfigRevisionRepository, CoreCommandClient, HealthStatusReader,
     Http01ChallengeProbe, Http01ChallengeStore, RuntimeDrainState, RuntimeUpstreamStatusReader,
-    RuntimeUpstreamStatusSnapshot, SecretRecord, SecretStore, TrustBundleMetadata,
+    RuntimeUpstreamStatusSnapshot, SecretRecord, SecretStore, SupportBundleCollector,
+    SupportBundleRequest, TrustBundleMetadata,
 };
 
 /// Foundation smoke helper.
@@ -36,6 +38,89 @@ pub fn crate_name() -> &'static str {
 }
 
 pub const API_VERSION_PREFIX: &str = "/api/v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportBundleResponse {
+    pub archive_id: String,
+    pub digest_sha256: String,
+    pub collected_artifacts: Vec<String>,
+    pub omitted_artifacts: Vec<String>,
+    pub total_bytes: u64,
+}
+
+/// Creates a bundle with the fixed product allowlist; caller-controlled paths,
+/// artifact lists, bounds, service actions, and archive locations are not accepted.
+pub fn create_support_bundle<C: SupportBundleCollector>(
+    sessions: &SessionStore,
+    session_id: Option<&str>,
+    csrf_token: Option<&str>,
+    collector: C,
+) -> Result<SupportBundleResponse, AppError> {
+    require_session(sessions, session_id)?;
+    let session_id = session_id.expect("session checked above");
+    require_csrf(sessions, session_id, csrf_token)?;
+    let mut use_case = CollectSupportBundleUseCase::new(collector);
+    let report = use_case.execute(SupportBundleRequest {
+        artifacts: vec![
+            SupportBundleArtifact::VersionManifest,
+            SupportBundleArtifact::MaskedConfig,
+            SupportBundleArtifact::BoundedProductLog,
+            SupportBundleArtifact::HealthSummary,
+            SupportBundleArtifact::ResourceSummary,
+            SupportBundleArtifact::AuditSummary,
+        ],
+        bounds: default_support_bundle_bounds(),
+    })?;
+    Ok(SupportBundleResponse {
+        archive_id: report.archive.archive_id,
+        digest_sha256: hex_encode(&report.archive.digest_sha256),
+        collected_artifacts: report
+            .collected_artifacts
+            .into_iter()
+            .map(support_artifact_name)
+            .map(str::to_string)
+            .collect(),
+        omitted_artifacts: report
+            .omissions
+            .into_iter()
+            .map(|omission| support_artifact_name(omission.artifact).to_string())
+            .collect(),
+        total_bytes: report.total_bytes,
+    })
+}
+
+pub fn handle_support_bundle_http<C: SupportBundleCollector>(
+    request: &AdminHttpRequest,
+    sessions: &SessionStore,
+    collector: C,
+) -> AdminHttpResponse {
+    match create_support_bundle(sessions, request.session_id.as_deref(), request.csrf_token.as_deref(), collector) {
+        Ok(response) => AdminHttpResponse::json(200, format!(
+            "{{\"archive_id\":\"{}\",\"digest_sha256\":\"{}\",\"collected_artifacts\":[{}],\"omitted_artifacts\":[{}],\"total_bytes\":{}}}",
+            json_escape(&response.archive_id), response.digest_sha256,
+            response.collected_artifacts.iter().map(|value| format!("\"{}\"", json_escape(value))).collect::<Vec<_>>().join(","),
+            response.omitted_artifacts.iter().map(|value| format!("\"{}\"", json_escape(value))).collect::<Vec<_>>().join(","), response.total_bytes)),
+        Err(error) => {
+            let status = match error.code { ErrorCode::AdminAuthRequired => 401, ErrorCode::AdminCsrfRequired => 403, _ => 422 };
+            AdminHttpResponse::from_error(status, error, &request.request_id)
+        }
+    }
+}
+
+fn support_artifact_name(artifact: SupportBundleArtifact) -> &'static str {
+    match artifact {
+        SupportBundleArtifact::VersionManifest => "version_manifest",
+        SupportBundleArtifact::MaskedConfig => "masked_config",
+        SupportBundleArtifact::BoundedProductLog => "bounded_product_log",
+        SupportBundleArtifact::HealthSummary => "health_summary",
+        SupportBundleArtifact::ResourceSummary => "resource_summary",
+        SupportBundleArtifact::AuditSummary => "audit_summary",
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiErrorResponse {
@@ -519,6 +604,7 @@ fn status_reason(status_code: u16) -> &'static str {
         404 => "Not Found",
         409 => "Conflict",
         501 => "Not Implemented",
+        503 => "Service Unavailable",
         500 => "Internal Server Error",
         _ => "Error",
     }
@@ -2105,6 +2191,37 @@ pub fn handle_health_http(
     AdminHttpResponse::json(200, health_response_json(&health_response(snapshot)))
 }
 
+/// Renders the unauthenticated operational probe payload without exposing
+/// routes, revisions, configuration, or upstream details.
+pub fn handle_operational_probe_http(
+    request: &AdminHttpRequest,
+    lifecycle: OperationalLifecycle,
+    has_active_snapshot: bool,
+    has_listener: bool,
+    has_command_path: bool,
+) -> AdminHttpResponse {
+    let status = match (request.method, request.path.as_str()) {
+        (AdminHttpMethod::Get, "/api/v1/health/live") => lifecycle.liveness(),
+        (AdminHttpMethod::Get, "/api/v1/health/ready") => {
+            lifecycle.readiness(has_active_snapshot, has_listener, has_command_path)
+        }
+        _ => {
+            return error_response(
+                404,
+                AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
+                &request.request_id,
+            );
+        }
+    };
+    let (status_code, body) = match status {
+        ProbeStatus::Live => (200, r#"{"status":"live"}"#),
+        ProbeStatus::Ready => (200, r#"{"status":"ready"}"#),
+        ProbeStatus::NotLive => (503, r#"{"status":"not_live"}"#),
+        ProbeStatus::NotReady => (503, r#"{"status":"not_ready"}"#),
+    };
+    AdminHttpResponse::json(status_code, body.to_string())
+}
+
 pub fn handle_upstream_health_http(
     request: &AdminHttpRequest,
     sessions: &SessionStore,
@@ -3630,6 +3747,22 @@ mod tests {
         assert!(response.body.contains("\"current_revision_id\":\"rev-1\""));
         assert!(response.body.contains("\"routes\":0"));
         assert!(!response.body.contains("upstream_url"));
+    }
+
+    #[test]
+    fn operational_probes_are_unauthenticated_and_never_return_config_details() {
+        let live = AdminHttpRequest::new(AdminHttpMethod::Get, "/api/v1/health/live", "req-live");
+        let ready =
+            AdminHttpRequest::new(AdminHttpMethod::Get, "/api/v1/health/ready", "req-ready");
+        let live_response =
+            handle_operational_probe_http(&live, OperationalLifecycle::Draining, true, true, true);
+        let ready_response =
+            handle_operational_probe_http(&ready, OperationalLifecycle::Draining, true, true, true);
+        assert_eq!(live_response.status_code, 200);
+        assert_eq!(live_response.body, r#"{"status":"live"}"#);
+        assert_eq!(ready_response.status_code, 503);
+        assert_eq!(ready_response.body, r#"{"status":"not_ready"}"#);
+        assert!(!ready_response.body.contains("revision"));
     }
 
     #[test]
@@ -5931,5 +6064,59 @@ mod tests {
             500
         );
         assert!(!response.body.contains("route-500"));
+    }
+
+    struct FakeSupportCollector;
+    impl SupportBundleCollector for FakeSupportCollector {
+        fn collect_support_bundle(
+            &mut self,
+            request: SupportBundleRequest,
+        ) -> Result<edge_ports::SupportBundleReport, AppError> {
+            assert_eq!(request.artifacts.len(), 6);
+            assert_eq!(request.bounds, default_support_bundle_bounds());
+            Ok(edge_ports::SupportBundleReport {
+                archive: edge_domain::SupportBundleArchiveReceipt {
+                    archive_id: "archive-safe".into(),
+                    digest_sha256: [0xab; 32],
+                    redaction_applied: true,
+                },
+                collected_artifacts: vec![SupportBundleArtifact::VersionManifest],
+                total_bytes: 42,
+                oldest_collected_log_age_seconds: None,
+                omissions: vec![],
+            })
+        }
+    }
+
+    #[test]
+    fn support_bundle_api_requires_session_and_csrf_and_exposes_only_safe_receipt_fields() {
+        let mut sessions = SessionStore::default();
+        sessions.insert(Session {
+            session_id: "session".into(),
+            csrf_token: "csrf".into(),
+        });
+        assert_eq!(
+            create_support_bundle(&sessions, None, None, FakeSupportCollector)
+                .unwrap_err()
+                .code,
+            ErrorCode::AdminAuthRequired
+        );
+        assert_eq!(
+            create_support_bundle(&sessions, Some("session"), None, FakeSupportCollector)
+                .unwrap_err()
+                .code,
+            ErrorCode::AdminCsrfRequired
+        );
+        let response = create_support_bundle(
+            &sessions,
+            Some("session"),
+            Some("csrf"),
+            FakeSupportCollector,
+        )
+        .unwrap();
+        assert_eq!(response.archive_id, "archive-safe");
+        assert_eq!(response.digest_sha256, "ab".repeat(32));
+        assert_eq!(response.collected_artifacts, ["version_manifest"]);
+        assert_eq!(response.total_bytes, 42);
     }
 }

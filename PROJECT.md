@@ -55,35 +55,47 @@ workspace checks and explicit manual/integration procedures documented in the us
 ### Data Plane And Runtime Safety
 
 - 하나의 mio snapshot runtime이 HTTP/HTTPS listener, Host/path routing, TLS handshake,
+
   forwarding, timeout, backpressure, metrics와 WebSocket 상태를 처리한다.
 - Host 기반 multi-route, path specificity, backend reset의 `502`, upstream connect/read
+
   timeout의 `504`, slow client header의 `408`, chunked response, rollback route 보존을
   integration/smoke test로 검증한다.
 - 각 service는 eligible upstream에 deterministic round-robin을 적용한다. Active/passive
+
   health와 administrative drain을 합성하고 모든 upstream이 unavailable이면 `503`을 반환한다.
 - 안전한 GET/HEAD만 upstream bytes와 response bytes가 전달되기 전에 한 번 재시도한다.
+
   POST와 이미 전달이 시작된 요청은 재시도하지 않는다.
 - Config apply는 immutable snapshot, health availability, listener별 TLS server factory,
+
   outbound request/health trust registry를 하나의 acknowledged generation으로 교체한다.
   준비 또는 activation이 실패하면 이전 runtime truth와 revision을 보존한다.
 
 ### TLS And Private Trust
 
 - 수동/file-backed certificate, local self-signed HTTPS, multi-certificate SNI selection,
+
   hot certificate install을 지원한다.
 - 사설 PKI 검증은 test Root, issuing Intermediate, server/client leaf를 사용하며 complete
+
   chain, SNI, EKU와 validity를 검사한다. 인증서 시각 경계는 machine wall clock 대신 주입된
   rustls time provider로 결정적으로 테스트한다.
 - Strict upstream HTTPS는 명시적으로 관리되는 Root, TLS server name, HTTP Host를 각각
+
   요구하며 OS native Root 또는 plaintext fallback을 사용하지 않는다. Active health와
   WebSocket tunnel도 동일한 trust policy를 사용한다.
 - Required inbound mTLS는 HTTP parsing 전에 missing, unrelated Root, incomplete chain,
+
   wrong EKU, expired/not-yet-valid client certificate를 거부한다.
 - TLS handshake 실패 observation은 bounded nonblocking queue를 통과하며
+
   listener/upstream/error key별 60초에 최대 한 번 Product Log로 출력된다.
 - TLS passthrough, optional identity authorization, outbound client-certificate mTLS와
+
   revocation policy는 후속 범위다.
 - 외부 Let's Encrypt 자동화는 Post-MVP다. 저장소의 fake ACME/HTTP-01 및 staging safety
+
   test는 경계 구현을 검증하지만 외부 CA 발급 완료 증거가 아니다.
 
 자세한 설계와 검증 범위는 `docs/private-pki-testing.md`, `docs/tls-runtime-next.md`,
@@ -92,33 +104,45 @@ workspace checks and explicit manual/integration procedures documented in the us
 ### Observability And Audit
 
 - Product, Field Debug, Development의 세 로그 모드를 분리한다. Development 로그는
+
   production 기본 동작에 포함하지 않는다.
 - Log, health observation, metric publication은 bounded nonblocking queue를 사용하며 포화가
+
   mio event loop를 block하지 않는다.
 - 선택형 Prometheus endpoint는 loopback에만 bind하며 인증된 Admin metric summary와 동일한
+
   immutable registry snapshot을 읽는다. Remote unauthenticated exposure와 장기 retention은
   지원하지 않는다.
 - Production audit는 process-wide file-backed typed ledger다. Persistent mutation은 durable
+
   intent 전에 effect를 시작하지 않고 같은 operation ID로 terminal을 기록한다.
 - Ledger는 owner-only segment, bounded record/segment/total size, sequence와 SHA-256 chain,
+
   startup verification, trailing crash recovery와 interior corruption fail-closed를 제공한다.
 - 인증된 `GET /api/v1/audit`와 Admin viewer는 max-100 exact filter, opaque cursor, metadata-only
+
   projection을 사용한다. Path, hash, secret, raw config와 payload를 노출하지 않는다.
 - Local hash chain은 우발적 손상과 누락을 탐지하지만 hostile administrator에 대한
+
   non-repudiation을 보장하지 않는다. Remote export/signing은 후속 범위다.
 
 ### Backup And Recovery
 
 - Offline backup은 allowlisted artifact를 age passphrase로 암호화하고 bounded manifest,
+
   digest와 relation을 검증한다.
 - Fresh-target restore와 existing-target replace/recovery를 지원한다. 기존 target 교체는
+
   durable journal과 명시적 crash state를 사용하며 ambiguous state에서 경로를 임의 삭제하지
   않는다.
 - Schema v3 backup은 config revision, certificate, secret, 모든 managed trust bundle과
+
   verified audit segment를 포함한다. Verify/restore는 schema v1/v2도 계속 허용한다.
 - Recovery E2E는 authoritative revision과 certificate identity, old-session rejection,
+
   fresh Admin login, private-PKI trusted HTTPS, restored audit query와 next append를 검증한다.
 - Runtime health, drain, metric, session, CSRF와 connection state는 ephemeral이며 backup에서
+
   복원하지 않는다.
 
 자세한 절차는 `docs/backup-restore.md`, `docs/deployment.md`, `docs/troubleshooting.md`를
@@ -128,15 +152,20 @@ workspace checks and explicit manual/integration procedures documented in the us
 
 - 기본 `max_connections`는 1,024이고 runtime connection table에서 강제한다.
 - 기본 request header는 16 KiB, request body는 1 MiB, response buffer는 connection당
+
   64 KiB로 제한한다.
 - Admin request는 512 KiB, metrics response는 4 MiB, metric series는 16,384,
+
   audit storage는 128 MiB와 32 segment 상한을 가진다.
 - Backpressure, queue saturation, connection cleanup과 bounded recent log/metric behavior는
+
   자동 테스트한다.
 - Admin status/UI는 running revision에 묶인 logical payload used/limit, pressure와 active
+
   connection aggregate를 표시한다. Core는 이를 nonblocking latest-only port로 게시하며
   Admin은 Core ledger/table을 직접 lock하지 않는다. 이 값은 process RSS가 아니다.
 - Phase 011 Task 001~023은 typed policy, global logical payload ledger, exact release,
+
   restart-required desired/active 분리, resource metrics/logs와 live Admin summary를 완료했다.
   Task 024~043은 cross-platform harness foundation, canonical evidence, macOS arm64의
   1,024-connection capacity/admission, slow header/body, HTTPS/mTLS idle capacity, WebSocket
@@ -144,47 +173,57 @@ workspace checks and explicit manual/integration procedures documented in the us
   이후 steady HTTP/HTTPS/mTLS, control-plane maximum, slow-path, WebSocket, macOS arm64와 native
   Linux x86_64 full profile, 2시간 soak와 macOS deep diagnostic까지 완료했다.
 - Phase 011 Task 001 macOS arm64 release mini-run 2회에서 idle과 100개 incomplete idle
+
   connection RSS는 모두 9~10 MiB 범위였고 연결 100개의 관측 증가는 1 MiB
   미만이었다. 정확한 sample은 `artifacts/memory-baseline/task001/` report와
   `docs/adr/011-quantitative-memory-resource-safety.md`가 해당 build/profile을 기록한다.
 - Task 028의 fresh schema v2 macOS arm64 release idle smoke는 proxy PID만 3회 측정해 모두
+
   9,338,880 bytes RSS, missing sample 0을 기록했고 source/config identity와 SHA-256을 별도
   validator invocation으로 확인했다. 이는 harness 신뢰성 smoke이지 full memory 합격이 아니다.
 - Task 030의 macOS arm64 release HTTP small smoke는 신규 연결 요청 100개를 모두 정상
+
   응답으로 검증했고 최종 검증 실행의 peak와 5-cycle cooldown RSS가 모두 9,830,400 bytes였다. cooldown 뒤
   Admin live aggregate는 active connection과 logical payload가 모두 0이고 pressure는
   normal이었다. 이 결과는 아직 canonical full report나 Linux/고압력 합격 증거가 아니다.
 - Task 031은 이 HTTP small observation을 current source/config/scenario/process identity에 묶은
+
   canonical report와 SHA-256 sidecar로 atomic publish하고 별도 validator에서 재검증한다.
   stale identity, tamper/unknown field, failed counter/evaluation과 nonzero cleanup은 승인되지
   않는다. exact current report는 `artifacts/memory-evidence/task030-current/`에 있으며
   cross-platform/full-pressure release marker는 아직 남아 있다.
 - Task 032 actual release smoke는 64/256/512/1,024 순서로 incomplete connection을 올렸고,
+
   holder와 Admin live aggregate가 1,024에서 일치하는 것을 확인했다. logical payload는
   1,024 bytes였고 proxy RSS는 hold/release 관측에서 약 12.2~12.3 MiB였다. 모든 socket 해제 뒤
   active connection과 logical payload는 0, pressure는 normal이었다. exact current report와
   SHA-256 sidecar는 `artifacts/memory-evidence/task032-current/`에 있다. 이 결과는 macOS arm64
   plaintext profile이며 Linux, 1,025 admission 거부, slow/TLS/soak 완료 증거가 아니다.
 - Task 033 actual max+1 smoke는 1,025번째 socket terminal close, 기존 active count 1,024
+
   보존, `connection/connection_limit` metric 증가와 bounded Product event를 함께 검증했다.
   원래 holder 해제 뒤 1개 connection 재입장과 최종 connection/payload 0/0도 통과했다.
   source-bound report/digest와 요약은 `artifacts/memory-evidence/task033-current/`에 있다.
   이 결과도 macOS arm64 plaintext profile이며 payload/TLS/Linux/soak 완료 증거가 아니다.
 - Task 034는 local Python shim에서 stdin script가 실행되지 않는 evidence false-positive 위험을
+
   제거했다. Memory readiness와 HTTP unknown-field mutation은 explicit `python3 -c`로 실행되며,
   mutated file 존재, unknown field와 exact digest 일치를 validator 전에 확인한다. 수정 후 idle과
   HTTP 100/100 release smoke가 재통과했다. 제품 runtime behavior는 변경되지 않았다.
 - Task 035는 actual release proxy에서 slow header 64개를 production 30초 timeout까지 유지했다.
+
   Hold 중 connection/payload는 64/2,624였고 별도 정상 요청은 200이었다. Slow client는 64/64
   408로 종료됐으며 final connection/payload는 0/0, held peak RSS는 10,043,392 bytes였다.
   이는 macOS arm64 slow-header profile이며 body/response/TLS/Linux/soak 증거가 아니다.
 - Task 036은 actual release proxy에서 slow body 32개를 production 30초 timeout까지
+
   유지했다. 각 connection은 65,536 bytes를 선언하고 32,768 bytes만 전송했다.
   Hold 중 connection/payload는 32/1,051,072였고 별도 정상 request는 200이었다.
   Slow client는 32/32 408로 종료됐으며 final connection/payload는 0/0, held peak
   RSS는 약 11 MiB였다. 이는 macOS arm64 partial-body profile이며 payload
   exhaustion, response/TLS/Linux/soak 증거가 아니다.
 - Task 037은 16 MiB payload 예산에서 13개 partial body로 13,625,040 bytes를
+
   charge해 80% proactive pressure에 진입했다. 추가 connection은 terminal close와
   `payload/payload_pressure` metric/Product event로 거부되었고 기존 13개는
   보존됐다. 13/13 408 cleanup 후 0/0 normal과 recovery request 200을 확인했다.
@@ -192,20 +231,24 @@ workspace checks and explicit manual/integration procedures documented in the us
   socket으로 우회 유도하지 않고 exact-fit/max+1 pure ledger test로 검증한다.
   이 결과는 response/TLS/Linux/soak 완료 증거가 아니다.
 - Task 038은 temporary private Root/localhost leaf를 production certificate store에 배치해
+
   mio/rustls HTTPS trusted request 100/100, untrusted Root/wrong SNI 2/2 거부, post-negative
   trusted 200과 final 0/0 normal을 검증했다. Peak RSS는 약 10.7 MiB였다.
   Let's Encrypt/외부 network는 사용하지 않았다.
 - Task 039는 test-tool rustls client로 64/128/256/512 handshake를 완료해 TLS idle
+
   connection 512개를 실제 production listener에 보유했다. Admin은 hold 중
   `connections=512`, `payload=0`, `pressure=normal`을 보고했고, peak RSS는 약 16.7 MiB였다.
   완료된 TLS session과 kernel socket buffer는 logical payload ledger 밖에 있으므로 RSS로
   검증한다. close-notify/socket shutdown 뒤 0/0 normal과 trusted HTTPS 200 recovery를
   확인했다.
 - Task 040은 별도 client Root를 managed trust bundle에 게시하고 required-mTLS
+
   64/128/256 handshake를 완료했다. Hold 중 256/0 normal, no-cert/untrusted-client 2/2
   거부와 기존 session 보존, release 후 0/0 normal, authenticated recovery 200을 확인했다.
   Peak RSS는 약 14.9 MiB였다. 이는 revocation, WebSocket, Linux/soak 완료 증거가 아니다.
 - Task 041은 plaintext WebSocket 128개를 upgrade/echo 후 backpressure 상태로 유지해
+
   8,504,064 logical payload bytes, normal pressure와 peak RSS 약 106 MiB를 측정했다.
   최초 actual이 pending output을 가진 terminal tunnel cleanup 결함을 발견했고, Core는 이제
   drain 경로가 중단된 terminal WebSocket을 즉시 제거하면서 모든 directional charge를
@@ -213,17 +256,20 @@ workspace checks and explicit manual/integration procedures documented in the us
   Task 055는 동일 proxy/upstream에서 이 lifecycle을 5회 반복해 cooldown median plateau를
   검증한다. TLS WebSocket capacity, fragmentation/extensions, Linux/soak 완료 증거는 아니다.
 - Task 042는 신규 HTTP connection 10,000개를 5 cycle로 반복해 50,000/50,000 성공과
+
   cycle별 final 0/0 normal을 확인했다. 반복 macOS arm64 run의 startup/cooldown RSS는 약
   9.5 MiB였고 fixed 16 MiB plateau tolerance를 통과했다. 정확한 값은 실행별 canonical
   report를 권위로 하며 source/config/digest와 각 cycle counter/runtime/RSS를 묶는다. 이 값은
   cycle 종료 표본이므로 sub-cycle transient peak, throughput, Linux/long-soak 완료 증거는 아니다.
 - Task 043은 response header만 읽는 128개 slow client로 약 12~13 MiB logical response bytes와
+
   약 36.4 MiB RSS를 유지했다. 첫 actual에서 response 중 client full-close를 무시하는 결함을
   발견했고, Core는 request-side half-close는 정상 처리하되 mio `write_closed`/error에서
   upstream과 모든 charge를 즉시 정리하도록 수정했다. final 0/0 normal과 recovery 200을
   확인했다. Task 054는 동일 proxy/upstream에서 이 128 hold/release/cooldown을 5회 반복하고
   first/last cooldown median plateau를 검증한다. TLS slow client, Linux/soak 완료 증거는 아니다.
 - Task 044는 production audit/metrics collection의 최대 resident 위험을 별도 test-tool
+
   composition으로 측정한다. 정상 durable append로 생성한 audit 100,000건을 hash-chain
   재검증하고 metric 16,384 series/12,288 cumulative series를 함께 유지한다. 실제 Admin
   handler query를 3회 실행해 audit page 100, metric kind별 500 cap과 immutable response를
@@ -233,11 +279,13 @@ workspace checks and explicit manual/integration procedures documented in the us
   46,727,168 bytes(약 44.6 MiB)를 관찰했다. 정확한 identity/digest는
   `artifacts/memory-evidence/task044-current/`를 권위로 한다.
 - Task 045는 plaintext HTTP concurrency 100에서 worker당 1,000개의 새 connection을 처리해
+
   100,000/100,000 response correctness를 확인했다. 930회 public Admin 관찰의 max active는
   100, max charge는 18,620 bytes였고 final 0/0 normal, recovery 200이었다. load RSS peak
   10,764,288 bytes는 384 MiB ceiling 아래다. connection-per-request profile이므로 keep-alive
   throughput/latency, Linux, 3회 independent run과 long soak 완료를 주장하지 않는다.
 - Task 046은 private-PKI HTTPS concurrency 100에서 worker당 500개의 새 TLS connection을 처리해
+
   50,000/50,000 response correctness를 확인했다. wrong-root/wrong-SNI는 2/2 거부됐고 negative가
   trusted upstream forward 50,000건을 늘리지 않았다. 593회 Admin 관찰의 max active는 101,
   max charge는 27,041 bytes였으며 final 0/0 normal, trusted recovery 200이었다. load RSS peak
@@ -245,18 +293,22 @@ workspace checks and explicit manual/integration procedures documented in the us
   profile이며 public CA, mTLS steady, keep-alive throughput/latency, Linux/plateau/soak 완료를
   주장하지 않는다.
 - Task 047은 required-mTLS concurrency 64에서 quotient/remainder로 exact 25,000 request를
+
   분배해 25,000/25,000 response를 확인했다. no-cert/untrusted-client는 2/2 거부되고 upstream
   count는 25,000을 유지했다. max active 64, max charge 14,069 bytes, final 0/0 normal,
   authenticated recovery 200과 peak RSS 13,352,960 bytes를 확인했다. CRL/OCSP, rotation under
   load, keep-alive 성능, Linux/plateau/soak 완료 주장이 아니다.
 - 이 mini-run은 측정 tool과 owner inventory의 초기 characterization이다. 최대 동시 연결,
+
   HTTP/HTTPS/mTLS steady payload peak, 장시간 allocation leak slope와 Linux
   reference profile의 합격 기준은 아직 없다. 현재 수치를 memory usage 완료
   증거로 과장하지 않는다.
 - 후속 성능 단계는 HTTP/HTTPS/mTLS 각각 idle, steady load, max connection, slow-client,
+
   connection churn과 cooldown을 측정하고 macOS `time`, `ps`, `vmmap`, `leaks`, Instruments
   또는 대상 Linux의 동등한 profiler로 재현 가능한 report를 남겨야 한다.
 - Config의 `max_connections`와 `max_inflight_payload_bytes`는 typed schema bound와 startup
+
   validation을 통과해야 하며 running process에서는 immutable active policy로 전달된다.
 
 ### Automatic Quality And Release Evidence
@@ -295,13 +347,17 @@ MVP 완료 조건이 아니다.
 
 - Core data plane은 Tokio가 아니라 mio를 사용한다.
 - 의존성은 `bin -> adapters -> application -> domain` 방향을 유지하고 domain은 외부 I/O와
+
   framework를 import하지 않는다.
 - 환경 변수는 bootstrap에서 한 번 읽고 typed config/dependency로 전달한다. Runtime 중
+
   environment 재조회나 변경으로 policy를 바꾸지 않는다.
 - Admin Web UI는 Admin API client이며 config file이나 Core 내부 상태를 직접 수정하지 않는다.
 - Config 변경은 parse, normalize, validate, diff, plan, acknowledged apply, revision commit,
+
   audit 순서를 따른다.
 - 복잡한 connection, TLS, health/drain, backup/recovery, audit 흐름은 boolean flag 조합이
+
   아니라 명시적 state machine과 transition test로 관리한다.
 
 작성일: 2026-06-04  
@@ -313,10 +369,10 @@ MVP 완료 조건이 아니다.
 2026-07-16 기준 구현된 MVP는 HTTP/1.1 reverse proxy, unified mio
 manual/file-backed HTTPS, failure-aware multi-upstream routing, Admin API/Web UI
 기반 config lifecycle, local metrics, durable audit 검색/복구와 Docker Compose smoke를 포함한다. Let's Encrypt 자동 발급과
-외부 staging 검증은 Post-MVP 작업으로 미룬다. 이 문서의 ACME/Let's
-Encrypt 항목은 제품 비전 또는 Post-MVP 후보로 읽어야 하며 `docs/current-state.md`의 구현
-완료 주장으로 해석하지 않는다. 현재 `.tasks/plan.md`의 Phase 011 memory/resource 항목도
-계획 상태이며 구현 완료 기능이 아니다.
+외부 staging 검증은 사용자가 명시적으로 재개하기 전까지 Post-MVP 보류다. 이 문서의 ACME/Let's
+Encrypt 항목은 제품 비전 또는 보류 후보로 읽어야 하며 `docs/current-state.md`의 구현
+완료 주장으로 해석하지 않는다. Phase 011 memory/resource evidence는 `.tasks/phase011/`에
+보관된 완료 근거이고, 활성 `.tasks/plan.md`는 단일 노드 운영 제품화의 미완료 계획이다.
 
 ## 1. 프로젝트 개요
 
@@ -2768,12 +2824,16 @@ RSS ceiling/plateau를 대신하지 않는다. 진단 코드가 변경되면 기
 Phase 011의 최종 source는 다음 고정 검증을 모두 통과해야 완료다.
 
 - macOS arm64와 native Linux x86_64에서 각각 full-profile jobs 10/10, scenarios 12/12,
+
   `ready=true`, blocker 0
 - HTTP/HTTPS/mTLS steady, 1,024 HTTP idle, 512 private HTTPS idle, slow header/body/response,
+
   50,000 connection churn, 128 WebSocket와 control-plane maximum의 correctness/cleanup/ceiling
 - 한 macOS arm64 release process에서 7,200초, 121 observations, HTTP churn 60,000,
+
   WebSocket lifecycle 7,680, correctness/cleanup failure 0과 RSS plateau
 - macOS `/usr/bin/leaks` reference diagnostic에서 1,000/1,000 HTTP, cleanup 0/0/normal,
+
   recovery 200과 definite leak 0건/0 bytes
 - exact 9-file final memory bundle, canonical digest, current source identity와 독립 checker marker
 
@@ -2785,15 +2845,15 @@ Phase 011의 최종 source는 다음 고정 검증을 모두 통과해야 완료
 
 ### 32.1 Accepted 2026-07-20 Checkpoint
 
-| 검증 항목 | 승인 결과 |
-| --- | --- |
-| Source identity | `source-tree-sha256:2c2bcbf580ed60fe18c330340236ecccf0936d7e5a2d18822e1c36f0fb970862` |
+| 검증 항목                            | 승인 결과                                                                                                                            |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Source identity                  | `source-tree-sha256:2c2bcbf580ed60fe18c330340236ecccf0936d7e5a2d18822e1c36f0fb970862`                                            |
 | Native Linux x86_64 full profile | jobs 10/10, scenarios 12/12, ready=true, blocker 0, readiness `73cb85a4759b952969320651337106a854dc101c2c146e6f7f0468915a085f66` |
-| macOS arm64 full profile | jobs 10/10, scenarios 12/12, ready=true, blocker 0, readiness `79162c859929ace3c7d82828639d0a71b3948624ba4c54fb108ee476409853d4` |
-| macOS fixed soak | 7,200초, 121 observations, HTTP churn 60,000, WebSocket lifecycle 7,680, correctness/cleanup failure 0 |
-| Soak RSS | peak 9,633,792 bytes, first/last median 9,043,968/9,011,200 bytes, plateau pass |
-| macOS deep diagnostic | HTTP 1,000/1,000/0, cleanup 0/0/normal, recovery 200, definite leak 0건/0 bytes |
-| Final binding | exact 9 files, 12 scenarios, 121 soak observations, digest `78d453e0568c069e68c5e563535f2f2497ab42b80d765845a5568bacb7cbcf09` |
+| macOS arm64 full profile         | jobs 10/10, scenarios 12/12, ready=true, blocker 0, readiness `79162c859929ace3c7d82828639d0a71b3948624ba4c54fb108ee476409853d4` |
+| macOS fixed soak                 | 7,200초, 121 observations, HTTP churn 60,000, WebSocket lifecycle 7,680, correctness/cleanup failure 0                            |
+| Soak RSS                         | peak 9,633,792 bytes, first/last median 9,043,968/9,011,200 bytes, plateau pass                                                  |
+| macOS deep diagnostic            | HTTP 1,000/1,000/0, cleanup 0/0/normal, recovery 200, definite leak 0건/0 bytes                                                   |
+| Final binding                    | exact 9 files, 12 scenarios, 121 soak observations, digest `78d453e0568c069e68c5e563535f2f2497ab42b80d765845a5568bacb7cbcf09`    |
 
 Task 074는 이 최종 검증 중 발견된 WebSocket write buffer의 consumed history 보유를
 `advance_and_clear_if_complete` 전이로 제거했다. Complete drain은 길이를 0으로 되돌리고 기존

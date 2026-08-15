@@ -177,6 +177,7 @@ const state = {
   auditError: "",
   auditCursor: null,
   auditCursorStack: [],
+  supportBundleState: "No bundle created in this session.",
 };
 
 let auditRequestGeneration = 0;
@@ -274,6 +275,9 @@ const api = {
       json: { revision_id: revisionId },
       csrf: true,
     });
+  },
+  createSupportBundle() {
+    return this.request("/support-bundles", { method: "POST", csrf: true });
   },
   proxyHosts() {
     return this.request("/proxy-hosts");
@@ -379,6 +383,7 @@ function bindEvents() {
   elements.diffBtn.addEventListener("click", diffConfig);
   elements.applyBtn.addEventListener("click", applyConfig);
   elements.rollbackBtn.addEventListener("click", rollbackConfig);
+  elements.createSupportBundleBtn.addEventListener("click", createSupportBundle);
   elements.refreshBtn.addEventListener("click", refreshAll);
   elements.hostRows.addEventListener("click", handleHostTableClick);
   elements.certRows.addEventListener("click", handleCertificateTableClick);
@@ -1021,6 +1026,8 @@ function renderAuth() {
 }
 
 function renderDashboard() {
+  elements.createSupportBundleBtn.disabled = isFallbackMode() || !state.authenticated;
+  elements.supportBundleState.textContent = state.supportBundleState;
   elements.routeCount.textContent = String(state.status.routes || state.hosts.length || 0);
   elements.serviceCount.textContent = String(state.status.services || 0);
   elements.certCount.textContent = String(
@@ -1046,6 +1053,18 @@ function renderDashboard() {
   elements.resourceActivationState.textContent =
     state.status.activation_state || (state.status.restart_required ? "pending restart" : "aligned");
   elements.csrfState.textContent = state.csrfToken ? "present" : "none";
+}
+
+async function createSupportBundle() {
+  try {
+    const bundle = await api.createSupportBundle();
+    state.supportBundleState = `Created ${bundle.archive_id}; ${bundle.total_bytes || 0} bytes; ${bundle.omitted_artifacts?.length || 0} omitted.`;
+    setResult("Support bundle created");
+  } catch (error) {
+    handleError(error);
+  } finally {
+    render();
+  }
 }
 
 function liveResourceStatusText(status) {

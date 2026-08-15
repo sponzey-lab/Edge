@@ -808,10 +808,10 @@ pub mod snapshot_http {
     };
     use edge_ports::{
         CoreCommandClient, HealthAvailabilitySnapshot, HealthGeneration, Http01ChallengeResponder,
-        MetricEvent, MetricPublishOutcome, MetricPublisher, PassiveFailureReason,
-        PassiveObservation, PassiveObservationDispatcher, PassiveObservationOutcome,
-        PassiveObservationSubmit, ResourceMetricKind, ResourceRejectionReason,
-        RuntimeResourcePressure, RuntimeResourceStatusPublishOutcome,
+        MetricEvent, MetricPublishOutcome, MetricPublisher, OperationalRuntimeStatusPublisher,
+        PassiveFailureReason, PassiveObservation, PassiveObservationDispatcher,
+        PassiveObservationOutcome, PassiveObservationSubmit, ResourceMetricKind,
+        ResourceRejectionReason, RuntimeResourcePressure, RuntimeResourceStatusPublishOutcome,
         RuntimeResourceStatusPublisher, RuntimeResourceStatusSnapshot,
         RuntimeUpstreamStatusPublisher, ServerTlsSessionFactory,
     };
@@ -861,6 +861,7 @@ pub mod snapshot_http {
         passive_observation_dispatcher: Option<Box<dyn PassiveObservationDispatcher + Send>>,
         runtime_status_publisher: Option<Arc<dyn RuntimeUpstreamStatusPublisher>>,
         resource_status_publisher: Option<Arc<dyn RuntimeResourceStatusPublisher>>,
+        operational_runtime_status_publisher: Option<Arc<dyn OperationalRuntimeStatusPublisher>>,
         client_tls_registry: PreparedClientTlsRegistry,
         #[cfg(test)]
         stall_upstream_connect: bool,
@@ -914,6 +915,7 @@ pub mod snapshot_http {
                 passive_observation_dispatcher: None,
                 runtime_status_publisher: None,
                 resource_status_publisher: None,
+                operational_runtime_status_publisher: None,
                 client_tls_registry: PreparedClientTlsRegistry::new(),
                 #[cfg(test)]
                 stall_upstream_connect: false,
@@ -1004,6 +1006,14 @@ pub mod snapshot_http {
             P: RuntimeResourceStatusPublisher + 'static,
         {
             self.resource_status_publisher = Some(Arc::new(publisher));
+            self
+        }
+
+        pub fn with_operational_runtime_status_publisher<P>(mut self, publisher: P) -> Self
+        where
+            P: OperationalRuntimeStatusPublisher + 'static,
+        {
+            self.operational_runtime_status_publisher = Some(Arc::new(publisher));
             self
         }
 
@@ -1361,6 +1371,13 @@ pub mod snapshot_http {
         if let Some(commands) = runtime_commands.as_mut() {
             commands.install_waker(poll.registry(), COMMAND_WAKER)?;
         }
+        if let Some(publisher) = config.operational_runtime_status_publisher.take() {
+            publisher.publish_operational_runtime_facts(edge_domain::OperationalRuntimeFacts {
+                has_active_snapshot: true,
+                has_listener: true,
+                has_command_path: runtime_commands.is_some(),
+            });
+        }
         if let Some(ready) = ready {
             let _ = ready.send(());
         }
@@ -1396,6 +1413,7 @@ pub mod snapshot_http {
             upstream_selector,
         );
         let mut idle_polls = 0_usize;
+        let mut drain_deadline = None::<Instant>;
 
         loop {
             let command_result = drain_runtime_commands_with_listeners(
@@ -1405,17 +1423,26 @@ pub mod snapshot_http {
                 &mut runtime.upstream_selector,
                 &mut runtime.client_tls_registry,
             );
+            if let Some(deadline_ms) = command_result.drain_deadline_ms {
+                drain_deadline = Some(Instant::now() + Duration::from_millis(deadline_ms));
+            }
             runtime.sync_active_revision(snapshot.as_ref());
             if command_result.shutdown_requested {
                 return Ok(());
             }
-            for listener in &listeners {
-                runtime.accept_ready(
-                    &listener.std_listener,
-                    listener.tls_session_factory.as_ref(),
-                    &listener.resource_id,
-                    poll.registry(),
-                )?;
+            if drain_deadline.is_none() {
+                for listener in &listeners {
+                    runtime.accept_ready(
+                        &listener.std_listener,
+                        listener.tls_session_factory.as_ref(),
+                        &listener.resource_id,
+                        poll.registry(),
+                    )?;
+                }
+            } else if runtime.connections.is_empty()
+                || drain_deadline.is_some_and(|deadline| deadline <= Instant::now())
+            {
+                return Ok(());
             }
             runtime.drive_client_reads(poll.registry(), snapshot.as_ref())?;
             let expired =
@@ -1424,7 +1451,14 @@ pub mod snapshot_http {
                 runtime.next_poll_timeout(Instant::now(), completed_limit),
                 runtime_commands.is_some(),
             );
-            poll.poll(&mut events, poll_timeout)?;
+            poll.poll(
+                &mut events,
+                if drain_deadline.is_some() {
+                    Some(Duration::from_millis(10))
+                } else {
+                    poll_timeout
+                },
+            )?;
             let command_result = drain_runtime_commands_with_listeners(
                 &mut runtime_commands,
                 &mut snapshot,
@@ -1432,6 +1466,9 @@ pub mod snapshot_http {
                 &mut runtime.upstream_selector,
                 &mut runtime.client_tls_registry,
             );
+            if let Some(deadline_ms) = command_result.drain_deadline_ms {
+                drain_deadline = Some(Instant::now() + Duration::from_millis(deadline_ms));
+            }
             runtime.sync_active_revision(snapshot.as_ref());
             if command_result.shutdown_requested {
                 return Ok(());
@@ -1463,13 +1500,15 @@ pub mod snapshot_http {
                     continue;
                 }
                 if let Some(index) = listener_index(event.token(), listeners.len()) {
-                    let listener = &listeners[index];
-                    runtime.accept_ready(
-                        &listener.std_listener,
-                        listener.tls_session_factory.as_ref(),
-                        &listener.resource_id,
-                        poll.registry(),
-                    )?;
+                    if drain_deadline.is_none() {
+                        let listener = &listeners[index];
+                        runtime.accept_ready(
+                            &listener.std_listener,
+                            listener.tls_session_factory.as_ref(),
+                            &listener.resource_id,
+                            poll.registry(),
+                        )?;
+                    }
                     continue;
                 }
 
@@ -1538,6 +1577,7 @@ pub mod snapshot_http {
     struct RuntimeCommandDrainOutcome {
         handled: bool,
         shutdown_requested: bool,
+        drain_deadline_ms: Option<u64>,
     }
 
     fn drain_runtime_commands_with_listeners(
@@ -1555,6 +1595,9 @@ pub mod snapshot_http {
             let ack = match envelope.payload {
                 RuntimeCommandPayload::Core(command) => {
                     let shutdown_requested = matches!(command, CoreCommand::Shutdown);
+                    if let CoreCommand::BeginDrain { deadline_ms } = command {
+                        outcome.drain_deadline_ms = Some(deadline_ms);
+                    }
                     let ack = handle_runtime_command(command, snapshot, upstream_selector);
                     if shutdown_requested && ack.is_success() {
                         outcome.shutdown_requested = true;
@@ -1812,6 +1855,7 @@ pub mod snapshot_http {
             CoreCommand::RollbackConfigSnapshot { .. }
             | CoreCommand::InstallCertificate { .. }
             | CoreCommand::RefreshRouteTable
+            | CoreCommand::BeginDrain { .. }
             | CoreCommand::Shutdown => CommandAck::accepted(),
         }
     }
@@ -4803,7 +4847,7 @@ pub mod snapshot_http {
                 ResourcePressureState::Exhausted => RuntimeResourcePressure::Exhausted,
                 ResourcePressureState::FailedClosed => RuntimeResourcePressure::FailedClosed,
             };
-            let changed = self.last_resource_status.as_ref().map_or(true, |previous| {
+            let changed = self.last_resource_status.as_ref().is_none_or(|previous| {
                 previous.revision_id != self.active_revision_id
                     || previous.used_payload_bytes != self.payload_ledger.used_bytes()
                     || previous.payload_limit_bytes
@@ -9850,6 +9894,7 @@ impl CoreRuntime {
             CoreCommand::RollbackConfigSnapshot { .. } => CommandAck::accepted(),
             CoreCommand::InstallCertificate { .. } => CommandAck::accepted(),
             CoreCommand::RefreshRouteTable => CommandAck::accepted(),
+            CoreCommand::BeginDrain { .. } => CommandAck::accepted(),
             CoreCommand::Shutdown => {
                 self.shutting_down = true;
                 CommandAck::accepted()
@@ -13051,6 +13096,33 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_mio_runtime_begin_drain_stops_acceptance_and_exits_when_idle() {
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (mut command_client, command_receiver) = runtime_command_channel(2);
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(
+                    listen,
+                    snapshot_for_runtime(vec![], vec![]),
+                    HttpLimits::default(),
+                )
+                .with_runtime_commands(command_receiver),
+                usize::MAX,
+                ready_tx,
+            )
+        });
+        ready_rx.recv().unwrap();
+
+        let ack = command_client.send(CoreCommand::BeginDrain { deadline_ms: 100 });
+
+        assert!(ack.is_success());
+        runtime_thread.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn snapshot_mio_runtime_emits_access_log_without_blocking_runtime() {
         let (api_addr, api_backend) = spawn_text_backend("api");
         let snapshot = snapshot_for_runtime(
@@ -13357,6 +13429,132 @@ mod tests {
             .request_id
             .as_deref()
             .is_some_and(|id| id.starts_with("proxy-")));
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_drain_deadline_force_closes_a_stalled_active_request() {
+        let snapshot = snapshot_for_runtime(
+            vec![route_to_service(
+                "api",
+                "api.example.test",
+                "/",
+                "api-service",
+            )],
+            vec![Service {
+                policy: edge_domain::ServicePolicy::default(),
+                id: ServiceId::new("api-service"),
+                upstreams: vec![Upstream {
+                    id: UpstreamId::new("api-service-1"),
+                    url: "http://127.0.0.1:9".to_string(),
+                    administrative_state: edge_domain::UpstreamAdministrativeState::Active,
+                    tls: edge_domain::UpstreamTlsPolicy::Disabled,
+                }],
+            }],
+        );
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (mut commands, receiver) = runtime_command_channel(2);
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default())
+                    .with_resource_limits(ResourceLimits {
+                        idle_timeout: Duration::from_secs(10),
+                        connect_timeout: Duration::from_secs(10),
+                        upstream_read_timeout: Duration::from_secs(10),
+                        client_write_timeout: Duration::from_secs(10),
+                        ..ResourceLimits::default()
+                    })
+                    .with_stalled_upstream_connect()
+                    .with_runtime_commands(receiver),
+                usize::MAX,
+                ready_tx,
+            )
+        });
+        ready_rx.recv().unwrap();
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: api.example.test\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        thread::sleep(Duration::from_millis(25));
+
+        assert!(commands
+            .send(CoreCommand::BeginDrain { deadline_ms: 25 })
+            .is_success());
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        runtime.join().unwrap().unwrap();
+
+        assert!(
+            response.is_empty(),
+            "drain deadline must close stalled request"
+        );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_drain_allows_an_active_request_to_complete_before_deadline() {
+        let backend = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let (received_tx, received_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let backend_thread = thread::spawn(move || {
+            let (mut stream, _) = backend.accept().unwrap();
+            let mut request = [0_u8; 512];
+            let _ = stream.read(&mut request).unwrap();
+            received_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\ndrained",
+                )
+                .unwrap();
+        });
+        let snapshot = snapshot_for_runtime(
+            vec![route_to_service(
+                "api",
+                "api.example.test",
+                "/",
+                "api-service",
+            )],
+            vec![service_with_upstream("api-service", backend_addr)],
+        );
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (mut commands, receiver) = runtime_command_channel(2);
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default())
+                    .with_runtime_commands(receiver),
+                usize::MAX,
+                ready_tx,
+            )
+        });
+        ready_rx.recv().unwrap();
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: api.example.test\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        received_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        assert!(commands
+            .send(CoreCommand::BeginDrain { deadline_ms: 500 })
+            .is_success());
+        release_tx.send(()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        runtime.join().unwrap().unwrap();
+        backend_thread.join().unwrap();
+
+        assert!(response.ends_with("drained"), "response was {response:?}");
     }
 
     #[test]

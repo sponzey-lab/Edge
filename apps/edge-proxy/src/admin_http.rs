@@ -1,5 +1,6 @@
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     mpsc, Arc, Mutex,
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 use edge_adapters::{AuditLedgerOptions, FileAuditLedger, MetricChannelPublisher};
 use edge_adapters::{
     FakeAcmeClient, FileCertificateStore, FileRevisionRepository, FileSecretStore,
-    FileTrustBundleStore, MemoryCertificateStore, MemoryLogSink,
+    FileSupportBundleCollector, FileTrustBundleStore, MemoryCertificateStore, MemoryLogSink,
     RustlsCertificateMaterialValidator, RustlsTrustBundleMaterialValidator, SharedAuditAdmission,
     SharedFileAuditLedger,
 };
@@ -20,11 +21,12 @@ use edge_admin_api::{
     handle_certificate_import_http, handle_certificate_issue_http_with_http01,
     handle_certificate_list_http, handle_certificate_renew_http, handle_config_apply_http,
     handle_config_rollback_http, handle_error_logs_http, handle_metrics_http,
-    handle_proxy_host_create_http, handle_proxy_host_delete_http, handle_proxy_host_update_http,
-    handle_stateful_http_request, handle_status_http_with_resource, handle_trust_bundle_http,
-    handle_upstream_health_http, parse_admin_http_request, render_admin_http_response,
-    require_csrf, require_session, AdminAuthenticator, AdminHttpMethod, AdminHttpRequest,
-    AdminHttpResponse, AdminHttpRuntimeContext, SessionStore, TrustBundleAdminService,
+    handle_operational_probe_http, handle_proxy_host_create_http, handle_proxy_host_delete_http,
+    handle_proxy_host_update_http, handle_stateful_http_request, handle_status_http_with_resource,
+    handle_support_bundle_http, handle_trust_bundle_http, handle_upstream_health_http,
+    parse_admin_http_request, render_admin_http_response, require_csrf, require_session,
+    AdminAuthenticator, AdminHttpMethod, AdminHttpRequest, AdminHttpResponse,
+    AdminHttpRuntimeContext, SessionStore, TrustBundleAdminService,
 };
 use edge_application::{
     admin_setup_audit_operation, begin_audit_operation, certificate_audit_operation,
@@ -40,13 +42,14 @@ use edge_application::{
 use edge_domain::{
     AuditAction, AuditActorKind, AuditContext, AuditEffectState, AuditOperationId, AuditOutcome,
     AuditRequestId, AuditStableErrorCode, AuditTargetId, CertificateRef, ConfigSnapshot, ErrorCode,
-    LogMode, TrustBundleRef,
+    LogMode, OperationalLifecycle, OperationalRuntimeFacts, TrustBundleRef,
 };
 use edge_ports::{
     AcmeClient, AuditEvent, AuditSink, CertificateMaterialValidator, CertificateStore,
     ConfigRevisionRepository, CoreCommandClient, HealthStatusReader, Http01ChallengeProbe,
     Http01ChallengeResponder, Http01ChallengeStore, LogSink, MetricPublishOutcome, MetricPublisher,
-    RetainedConfigSnapshots, RuntimeResourceStatusPublishOutcome, RuntimeResourceStatusPublisher,
+    OperationalRuntimeStatusPublisher, OperationalRuntimeStatusReader, RetainedConfigSnapshots,
+    RuntimeResourceStatusPublishOutcome, RuntimeResourceStatusPublisher,
     RuntimeResourceStatusReader, RuntimeResourceStatusSnapshot, RuntimeUpstreamStatusPublisher,
     RuntimeUpstreamStatusReader, RuntimeUpstreamStatusSnapshot, StructuredLogEvent,
     TrustBundleEventSink, TrustBundleMetadata, TrustBundleOperationEvent,
@@ -55,6 +58,38 @@ use edge_ports::{
 const DEFAULT_MAX_ADMIN_REQUEST_BYTES: usize = 512 * 1024;
 const DEFAULT_RECENT_LOG_CAPACITY: usize = 100;
 const DEFAULT_CERTIFICATE_RENEWAL_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+#[derive(Clone, Default)]
+pub struct SharedOperationalRuntimeStatus(Arc<Mutex<Option<OperationalRuntimeFacts>>>);
+
+impl OperationalRuntimeStatusPublisher for SharedOperationalRuntimeStatus {
+    fn publish_operational_runtime_facts(&self, facts: OperationalRuntimeFacts) {
+        if let Ok(mut current) = self.0.lock() {
+            *current = Some(facts);
+        }
+    }
+}
+
+impl OperationalRuntimeStatusReader for SharedOperationalRuntimeStatus {
+    fn read_operational_runtime_facts(
+        &self,
+    ) -> Result<OperationalRuntimeFacts, edge_domain::AppError> {
+        self.0
+            .lock()
+            .map_err(|_| {
+                edge_domain::AppError::new(
+                    ErrorCode::InternalBug,
+                    "operational runtime status lock poisoned",
+                )
+            })?
+            .ok_or_else(|| {
+                edge_domain::AppError::new(
+                    ErrorCode::RuntimeHealthUnavailable,
+                    "operational runtime status unavailable",
+                )
+            })
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct SharedRuntimeUpstreamStatus {
@@ -370,12 +405,15 @@ pub struct AdminHttpServerState {
     runtime_status: Arc<dyn RuntimeUpstreamStatusReader>,
     resource_status: Arc<dyn RuntimeResourceStatusReader>,
     metrics: Arc<dyn MetricSnapshotReaderPort>,
+    operational_lifecycle: Arc<Mutex<OperationalLifecycle>>,
+    operational_runtime_status: Arc<dyn OperationalRuntimeStatusReader>,
     mutation: Option<Arc<Mutex<AdminMutationState>>>,
     trust_bundles: Option<Arc<Mutex<TrustBundleRuntimeService>>>,
     durable_audit: Option<(SharedFileAuditLedger, SharedAuditAdmission)>,
     auth_failure_audit_sampler: Arc<Mutex<AuthFailureAuditSampler>>,
     max_request_bytes: usize,
     certificate_renewal_window_seconds: u64,
+    support_bundle_paths: Option<AdminHttpSupportBundlePaths>,
 }
 
 struct UnavailableHealthStatusReader;
@@ -680,9 +718,18 @@ pub struct AdminHttpRuntimeWiring<C, A, P> {
     pub runtime_status_reader: Arc<dyn RuntimeUpstreamStatusReader>,
     pub resource_status_reader: Arc<dyn RuntimeResourceStatusReader>,
     pub metrics_reader: Arc<dyn MetricSnapshotReaderPort>,
+    pub operational_lifecycle: Arc<Mutex<OperationalLifecycle>>,
+    pub operational_runtime_status_reader: Arc<dyn OperationalRuntimeStatusReader>,
     pub product_log: Box<dyn LogSink + Send>,
     pub log_receivers: AdminLogReceivers,
     pub audit_ledger: SharedFileAuditLedger,
+    pub support_bundle_paths: AdminHttpSupportBundlePaths,
+}
+
+#[derive(Clone)]
+pub struct AdminHttpSupportBundlePaths {
+    pub source_root: PathBuf,
+    pub output: PathBuf,
 }
 
 impl AdminHttpServerState {
@@ -721,13 +768,21 @@ impl AdminHttpServerState {
             runtime_status: Arc::new(UnavailableRuntimeStatusReader),
             resource_status: Arc::new(UnavailableResourceStatusReader),
             metrics: Arc::new(UnavailableMetricSnapshotReader),
+            operational_lifecycle: Arc::new(Mutex::new(OperationalLifecycle::Starting)),
+            operational_runtime_status: Arc::new(SharedOperationalRuntimeStatus::default()),
             mutation: None,
             trust_bundles: None,
             durable_audit: None,
             auth_failure_audit_sampler: Arc::new(Mutex::new(AuthFailureAuditSampler::default())),
             max_request_bytes: DEFAULT_MAX_ADMIN_REQUEST_BYTES,
             certificate_renewal_window_seconds: DEFAULT_CERTIFICATE_RENEWAL_WINDOW_SECONDS,
+            support_bundle_paths: None,
         }
+    }
+
+    pub fn with_support_bundle_paths(mut self, paths: AdminHttpSupportBundlePaths) -> Self {
+        self.support_bundle_paths = Some(paths);
+        self
     }
 
     pub fn with_mutations<C>(mut self, revisions: FileRevisionRepository, command_client: C) -> Self
@@ -857,6 +912,22 @@ impl AdminHttpServerState {
         self
     }
 
+    pub fn with_operational_lifecycle(
+        mut self,
+        lifecycle: Arc<Mutex<OperationalLifecycle>>,
+    ) -> Self {
+        self.operational_lifecycle = lifecycle;
+        self
+    }
+
+    pub fn with_operational_runtime_status_reader(
+        mut self,
+        reader: Arc<dyn OperationalRuntimeStatusReader>,
+    ) -> Self {
+        self.operational_runtime_status = reader;
+        self
+    }
+
     #[cfg(test)]
     fn with_observability(
         mut self,
@@ -895,13 +966,16 @@ where
         .with_runtime_status_reader(runtime.runtime_status_reader)
         .with_resource_status_reader(runtime.resource_status_reader)
         .with_metrics_reader(runtime.metrics_reader)
+        .with_operational_lifecycle(runtime.operational_lifecycle)
+        .with_operational_runtime_status_reader(runtime.operational_runtime_status_reader)
         .with_product_log_sink(runtime.product_log)
         .with_durable_audit(runtime.audit_ledger)
         .with_trust_bundles(stores.trust_bundles, trust_revisions)
         .with_mutations(stores.revisions, runtime.command_client)
         .with_access_log_receiver(runtime.log_receivers.access)
         .with_error_log_receiver(runtime.log_receivers.error)
-        .with_log_drop_counter(runtime.log_receivers.dropped);
+        .with_log_drop_counter(runtime.log_receivers.dropped)
+        .with_support_bundle_paths(runtime.support_bundle_paths);
     Ok(thread::spawn(move || loop {
         if let Err(error) = serve_next_admin_http_connection(&listener, &state) {
             if error.kind() == io::ErrorKind::WouldBlock {
@@ -981,6 +1055,31 @@ fn handle_admin_http_stream(mut stream: TcpStream, state: &AdminHttpServerState)
         stream.write_all(rendered.as_bytes())?;
         return stream.flush();
     }
+    if request.method == AdminHttpMethod::Get
+        && matches!(
+            request.path.as_str(),
+            "/api/v1/health/live" | "/api/v1/health/ready"
+        )
+    {
+        let lifecycle = *state
+            .operational_lifecycle
+            .lock()
+            .map_err(|_| io::Error::other("operational lifecycle lock poisoned"))?;
+        let facts = state
+            .operational_runtime_status
+            .read_operational_runtime_facts()
+            .unwrap_or_default();
+        let response = handle_operational_probe_http(
+            &request,
+            lifecycle,
+            facts.has_active_snapshot,
+            facts.has_listener,
+            facts.has_command_path,
+        );
+        let rendered = render_admin_http_response(&response);
+        stream.write_all(rendered.as_bytes())?;
+        return stream.flush();
+    }
     let sessions = state
         .sessions
         .lock()
@@ -991,6 +1090,27 @@ fn handle_admin_http_stream(mut stream: TcpStream, state: &AdminHttpServerState)
         .lock()
         .map_err(|_| io::Error::other("admin authenticator lock poisoned"))?;
     let mut authenticator = authenticator;
+
+    if request.method == AdminHttpMethod::Post && request.path == "/api/v1/support-bundles" {
+        let response = match &state.support_bundle_paths {
+            Some(paths) => handle_support_bundle_http(
+                &request,
+                &sessions,
+                FileSupportBundleCollector::new_online(&paths.source_root, &paths.output),
+            ),
+            None => AdminHttpResponse::from_error(
+                503,
+                edge_domain::AppError::new(
+                    ErrorCode::RuntimeHealthUnavailable,
+                    "support bundle collector is not configured",
+                ),
+                &request.request_id,
+            ),
+        };
+        let rendered = render_admin_http_response(&response);
+        stream.write_all(rendered.as_bytes())?;
+        return stream.flush();
+    }
 
     if request.method == AdminHttpMethod::Get && request.path == "/api/v1/upstream-health" {
         let response = handle_upstream_health_http(
@@ -2276,6 +2396,108 @@ mod tests {
         assert!(response.contains("\"status\":\"ok\""));
         assert!(response.contains("\"current_revision_id\":\"file-current\""));
         assert!(!response.contains("upstream_url"));
+    }
+
+    #[test]
+    fn admin_http_listener_serves_unauthenticated_operational_probes_over_tcp() {
+        let state = AdminHttpServerState::new(
+            snapshot(),
+            Some("hash".to_string()),
+            FileSecretStore::new(temp_root("operational-probes")),
+        );
+        *state.operational_lifecycle.lock().unwrap() = OperationalLifecycle::Draining;
+        let live = request_once_with_state(
+            state.clone(),
+            "GET /api/v1/health/live HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n",
+        );
+        let ready = request_once_with_state(
+            state,
+            "GET /api/v1/health/ready HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n",
+        );
+        assert!(live.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(live.contains(r#"{"status":"live"}"#));
+        assert!(ready.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+        assert!(ready.contains(r#"{"status":"not_ready"}"#));
+        assert!(!ready.contains("revision"));
+    }
+
+    #[test]
+    fn shared_operational_runtime_status_is_unavailable_until_core_publishes_facts() {
+        let status = SharedOperationalRuntimeStatus::default();
+        assert!(
+            edge_ports::OperationalRuntimeStatusReader::read_operational_runtime_facts(&status)
+                .is_err()
+        );
+
+        edge_ports::OperationalRuntimeStatusPublisher::publish_operational_runtime_facts(
+            &status,
+            OperationalRuntimeFacts {
+                has_active_snapshot: true,
+                has_listener: true,
+                has_command_path: true,
+            },
+        );
+
+        assert_eq!(
+            edge_ports::OperationalRuntimeStatusReader::read_operational_runtime_facts(&status)
+                .unwrap(),
+            OperationalRuntimeFacts {
+                has_active_snapshot: true,
+                has_listener: true,
+                has_command_path: true,
+            }
+        );
+    }
+
+    #[test]
+    fn operational_readiness_requires_published_runtime_facts_over_tcp() {
+        let state = AdminHttpServerState::new(
+            snapshot(),
+            Some("hash".to_string()),
+            FileSecretStore::new(temp_root("operational-readiness-facts")),
+        );
+        *state.operational_lifecycle.lock().unwrap() = OperationalLifecycle::Ready;
+        let ready = request_once_with_state(
+            state,
+            "GET /api/v1/health/ready HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n",
+        );
+        assert!(ready.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+        assert!(ready.contains(r#"{"status":"not_ready"}"#));
+    }
+
+    #[test]
+    fn support_bundle_endpoint_uses_fixed_paths_and_requires_csrf() {
+        let root = temp_root("support-endpoint");
+        let support = root.join("support");
+        std::fs::create_dir_all(&support).unwrap();
+        std::fs::write(support.join("version.manifest"), "version=v1.2.3\n").unwrap();
+        let state = AdminHttpServerState::new(
+            snapshot(),
+            Some("hash".to_string()),
+            FileSecretStore::new(root.join("secrets")),
+        )
+        .with_support_bundle_paths(AdminHttpSupportBundlePaths {
+            source_root: support.clone(),
+            output: support.join("latest.tar"),
+        });
+        state
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(edge_admin_api::Session {
+                session_id: "session-1".into(),
+                csrf_token: "csrf-1".into(),
+            });
+        let unauthorized = request_once_with_state(
+            state.clone(),
+            "POST /api/v1/support-bundles HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-length: 0\r\n\r\n",
+        );
+        assert!(unauthorized.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+        let response = request_once_with_state(state, "POST /api/v1/support-bundles HTTP/1.1\r\nhost: 127.0.0.1\r\ncookie: sponzey_session=session-1\r\nx-csrf-token: csrf-1\r\ncontent-length: 0\r\n\r\n");
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("archive_id"));
+        assert!(!response.contains(&support.display().to_string()));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

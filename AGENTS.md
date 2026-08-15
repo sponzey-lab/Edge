@@ -1000,12 +1000,16 @@ mio 기반 core는 state machine 품질이 핵심이다.
 
 MVP 목표는 "간단한 웹 UI를 포함한 아주 간단한 NGINX 대체"다.
 
+현재 단일 노드 운영 제품화 단계에서는 수동/file-backed certificate와 사설 PKI를
+유지한다. Let's Encrypt, ACME, HTTP-01/DNS-01, 자동 갱신을 포함한 신규 인증서 자동화
+작업은 사용자가 명시적으로 재개하기 전까지 시작하거나 확장하지 않는다.
+
 MVP에서 집중할 것:
 
 - HTTP/1.1 reverse proxy
 - Host/path route
 - HTTPS termination
-- Let's Encrypt HTTP-01
+- manual/file-backed certificate와 private PKI 운영
 - Admin Web UI proxy host CRUD
 - config validation
 - config apply/rollback

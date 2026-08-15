@@ -51,6 +51,14 @@ Sponzey Edge Proxy는 선택형 Admin Web UI를 제공하는 Rust/mio 기반 sel
 외부 Let's Encrypt staging/production 발급과 실제 자동 갱신 검증은 Post-MVP 작업으로
 보류되어 있습니다. 현재 TLS 운영에는 수동 인증서 또는 사설 PKI 인증서를 사용합니다.
 
+## Support bundle
+
+인증된 Admin 사용자는 CSRF 보호가 적용된 Admin UI 또는
+`POST /api/v1/support-bundles`로 제한된 진단 bundle을 생성할 수 있습니다. 요청은 경로나
+artifact 선택을 받지 않으며 고정 경로의 private tar archive를 만듭니다. API/UI에는 archive ID,
+digest, artifact 요약, 누락 항목, 크기만 표시되고 private key, secret, header/cookie/body/query,
+filesystem path는 표시되지 않습니다. 이는 backup을 대체하지 않습니다.
+
 ### 설정과 관리
 
 - 선언형 TOML config
@@ -103,13 +111,24 @@ target/release/edge-proxy
 - Docker
 - Docker Compose
 
-패키지된 config를 빌드하고 시작합니다.
+공식 release는 SemVer tag와 immutable manifest digest가 함께 지정된 published Linux
+image를 사용합니다. 압축을 푼 release package에서 다음을 실행합니다.
 
 ```bash
-docker compose up --build
+sudo ./compose/install.sh \
+  --image-tag vX.Y.Z \
+  --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX
+sudo docker compose --project-directory /etc/sponzey-edge/compose \
+  --file /etc/sponzey-edge/compose/docker-compose.yml up -d --wait
 ```
 
-Runtime 경로, 권한, backup, 배포에 관한 자세한 내용은
+로컬 source 개발에서만 명시적 override를 사용합니다.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml --profile local-build up --build
+```
+
+Runtime 경로, 권한, backup, 지원 platform 경계, 배포에 관한 자세한 내용은
 [`docs/install.md`](docs/install.md)와 [`docs/deployment.md`](docs/deployment.md)를 참고하십시오.
 
 ### 재사용 가능한 테스트 컨테이너
@@ -200,7 +219,6 @@ SPONZEY_DATA_DIR=.sponzey \
 SPONZEY_CONFIG_FILE=examples/minimal.toml \
 SPONZEY_ADMIN_BIND=127.0.0.1:9443 \
 SPONZEY_LOG_MODE=product \
-SPONZEY_ACME_CLIENT=fake \
 cargo run -p edge-proxy
 ```
 
@@ -211,7 +229,6 @@ SPONZEY_DATA_DIR=.sponzey \
 SPONZEY_CONFIG_FILE=examples/minimal.toml \
 SPONZEY_ADMIN_BIND=127.0.0.1:9443 \
 SPONZEY_LOG_MODE=product \
-SPONZEY_ACME_CLIENT=fake \
 target/release/edge-proxy
 ```
 

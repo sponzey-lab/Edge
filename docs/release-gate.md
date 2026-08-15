@@ -1,5 +1,13 @@
 # MVP Release Gate
 
+> Current product scope: manual certificates and private PKI only. External
+> Let’s Encrypt/ACME issuance or renewal automation is deferred until explicitly
+> reopened. References below to ACME staging helpers, evidence directories, or
+> historical scripts describe archived/Post-MVP evidence contracts; they are not
+> current release instructions and must not be run as part of this productization
+> plan. Actual Linux Compose/systemd clean-host evidence remains required before
+> official support can be claimed.
+
 ## Current Automatic Gate
 
 The old local `scripts/` smoke runners and release evidence collectors have been removed from the

@@ -7,6 +7,10 @@ mod backup;
 pub use backup::*;
 mod audit_ledger;
 pub use audit_ledger::*;
+mod operational_upgrade;
+pub use operational_upgrade::*;
+mod support_bundle;
+pub use support_bundle::*;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -1637,7 +1641,7 @@ fn hex_encode(value: &str) -> String {
 }
 
 fn hex_decode(value: &str) -> Option<String> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return None;
     }
 

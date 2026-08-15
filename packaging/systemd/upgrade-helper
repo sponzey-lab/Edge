@@ -1,0 +1,151 @@
+#!/bin/sh
+set -eu
+
+EDGE_PROXY=/usr/local/bin/edge-proxy
+SYSTEMCTL=/usr/bin/systemctl
+DATA_DIR=/var/lib/sponzey-edge/data
+ARCHIVE="$DATA_DIR/upgrade-backup.age"
+STAGED_BINARY=/usr/local/bin/.edge-proxy.staged
+PREVIOUS_BINARY=/usr/local/bin/.edge-proxy.previous
+FAILED_BINARY=/usr/local/bin/.edge-proxy.failed
+STAGE_MANIFEST=/usr/local/bin/.edge-proxy.stage-digest
+
+fail() {
+  echo "$1" >&2
+  exit 2
+}
+
+require_passphrase_file() {
+  case "$1" in /*) ;; *) fail "passphrase file must be absolute" ;; esac
+  [ -f "$1" ] && [ ! -L "$1" ] || fail "passphrase file must be a regular file"
+  mode=$(stat -c '%a' "$1") || fail "cannot inspect passphrase file"
+  [ $((mode % 100)) -eq 0 ] || fail "passphrase file must be owner-only"
+}
+
+require_digest() {
+  digest=${1#sha256:}
+  [ "${#digest}" -eq 64 ] && ! printf '%s' "$digest" | grep -q '[^0-9A-Fa-f]' || fail "invalid image digest"
+}
+
+require_regular_file() {
+  [ -f "$1" ] && [ ! -L "$1" ] || fail "$2"
+}
+
+require_root_owned_file() {
+  require_regular_file "$1" "$2"
+  [ "$(stat -c '%u' "$1")" -eq 0 ] || fail "artifact source must be root-owned"
+  mode=$(stat -c '%a' "$1") || fail "cannot inspect artifact source"
+  [ $((mode % 100)) -eq 0 ] || fail "artifact source must not be group or world writable"
+}
+
+command=${1:-}
+[ -n "$command" ] || fail "upgrade helper command is required"
+shift
+
+case "$command" in
+  preflight)
+    [ "$#" -eq 4 ] && [ "$1" = "--version" ] && [ "$3" = "--image-digest" ] || fail "invalid preflight arguments"
+    case "$2" in v[0-9]*.[0-9]*.[0-9]*) ;; *) fail "invalid version" ;; esac
+    require_digest "$4"
+    [ -x "$EDGE_PROXY" ] && [ -x "$SYSTEMCTL" ] || fail "required executable is unavailable"
+    ;;
+  backup-create-verify)
+    [ "$#" -eq 2 ] && [ "$1" = "--passphrase-file" ] || fail "invalid backup arguments"
+    require_passphrase_file "$2"
+    "$EDGE_PROXY" backup create --data-dir "$DATA_DIR" --output "$ARCHIVE" --passphrase-file "$2" >/dev/null
+    "$EDGE_PROXY" backup verify --input "$ARCHIVE" --passphrase-file "$2" >/dev/null
+    printf 'backup_id=%s\n' "$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+    printf 'previous_artifact_digest=%s\n' "$(sha256sum "$EDGE_PROXY" | awk '{print $1}')"
+    ;;
+  drain-stop)
+    [ "$#" -eq 0 ] || fail "drain-stop takes no arguments"
+    "$SYSTEMCTL" stop sponzey-edge.service
+    ;;
+  start-ready)
+    [ "$#" -eq 0 ] || fail "start-ready takes no arguments"
+    "$SYSTEMCTL" start sponzey-edge.service
+    "$EDGE_PROXY" probe ready --admin-bind 127.0.0.1:9443
+    ;;
+  rollback)
+    [ "$#" -eq 4 ] && [ "$1" = "--backup-id" ] && [ "$3" = "--previous-artifact-digest" ] || fail "invalid rollback arguments"
+    [ -n "$2" ] || fail "backup id is required"
+    require_digest "$4"
+    if [ -e "$PREVIOUS_BINARY" ]; then
+      require_regular_file "$PREVIOUS_BINARY" "previous binary is missing or unsafe"
+      previous_digest=$(sha256sum "$PREVIOUS_BINARY" | awk '{print $1}')
+      expected_digest=${4#sha256:}
+      [ "$previous_digest" = "$expected_digest" ] || fail "previous binary digest mismatch"
+      require_regular_file "$EDGE_PROXY" "active binary is missing or unsafe"
+      rm -f "$FAILED_BINARY"
+      mv "$EDGE_PROXY" "$FAILED_BINARY" || fail "cannot preserve failed binary"
+      if ! mv "$PREVIOUS_BINARY" "$EDGE_PROXY"; then
+        mv "$FAILED_BINARY" "$EDGE_PROXY" || fail "rollback restoration failed"
+        fail "cannot restore previous binary"
+      fi
+      sync -f "$EDGE_PROXY" || fail "cannot sync restored binary"
+    fi
+    "$SYSTEMCTL" start sponzey-edge.service
+    ;;
+  admit-artifact)
+    [ "$#" -eq 4 ] && [ "$1" = "--input" ] && [ "$3" = "--image-digest" ] || fail "invalid admission arguments"
+    case "$2" in /*) ;; *) fail "artifact input must be absolute" ;; esac
+    [ "$2" != "$STAGED_BINARY" ] || fail "artifact input must not be the staged target"
+    require_digest "$4"
+    require_root_owned_file "$2" "artifact input is missing or unsafe"
+    [ -x "$2" ] || fail "artifact input is not executable"
+    actual_digest=$(sha256sum "$2" | awk '{print $1}')
+    digest=${4#sha256:}
+    [ "$actual_digest" = "$digest" ] || fail "artifact input digest mismatch"
+    if [ -e "$STAGED_BINARY" ] || [ -L "$STAGED_BINARY" ]; then
+      require_regular_file "$STAGED_BINARY" "staged binary target is unsafe"
+    fi
+    if [ -e "$STAGED_BINARY.tmp" ] || [ -L "$STAGED_BINARY.tmp" ]; then
+      require_regular_file "$STAGED_BINARY.tmp" "staged temporary target is unsafe"
+      rm -f "$STAGED_BINARY.tmp" || fail "cannot remove stale staged temporary"
+    fi
+    umask 077
+    cp -- "$2" "$STAGED_BINARY.tmp" || fail "cannot copy artifact input"
+    chmod 0755 "$STAGED_BINARY.tmp" || fail "cannot set staged binary mode"
+    copied_digest=$(sha256sum "$STAGED_BINARY.tmp" | awk '{print $1}')
+    [ "$copied_digest" = "$digest" ] || fail "copied artifact digest mismatch"
+    sync -f "$STAGED_BINARY.tmp" || fail "cannot sync staged binary"
+    mv "$STAGED_BINARY.tmp" "$STAGED_BINARY" || fail "cannot publish staged binary"
+    sync -f /usr/local/bin || fail "cannot sync staged binary directory"
+    ;;
+  stage-artifact)
+    [ "$#" -eq 2 ] && [ "$1" = "--image-digest" ] || fail "invalid stage arguments"
+    require_digest "$2"
+    require_regular_file "$STAGED_BINARY" "staged binary is missing or unsafe"
+    [ -x "$STAGED_BINARY" ] || fail "staged binary is not executable"
+    actual_digest=$(sha256sum "$STAGED_BINARY" | awk '{print $1}')
+    digest=${2#sha256:}
+    [ "$actual_digest" = "$digest" ] || fail "staged binary digest mismatch"
+    umask 077
+    printf '%s\n' "$actual_digest" > "$STAGE_MANIFEST.tmp" || fail "cannot write stage manifest"
+    sync -f "$STAGE_MANIFEST.tmp" || fail "cannot sync stage manifest"
+    mv "$STAGE_MANIFEST.tmp" "$STAGE_MANIFEST" || fail "cannot publish stage manifest"
+    sync -f /usr/local/bin || fail "cannot sync stage directory"
+    ;;
+  switch-staged)
+    [ "$#" -eq 0 ] || fail "switch-staged takes no arguments"
+    require_regular_file "$STAGE_MANIFEST" "stage manifest is missing or unsafe"
+    digest=$(cat "$STAGE_MANIFEST")
+    require_digest "$digest"
+    require_regular_file "$STAGED_BINARY" "staged binary is missing or unsafe"
+    require_regular_file "$EDGE_PROXY" "active binary is missing or unsafe"
+    actual_digest=$(sha256sum "$STAGED_BINARY" | awk '{print $1}')
+    [ "$actual_digest" = "$digest" ] || fail "staged binary digest mismatch"
+    if [ -e "$PREVIOUS_BINARY" ]; then
+      require_regular_file "$PREVIOUS_BINARY" "previous binary is unsafe"
+      rm -f "$PREVIOUS_BINARY" || fail "cannot remove stale previous binary"
+    fi
+    mv "$EDGE_PROXY" "$PREVIOUS_BINARY" || fail "cannot preserve previous binary"
+    if ! mv "$STAGED_BINARY" "$EDGE_PROXY"; then
+      mv "$PREVIOUS_BINARY" "$EDGE_PROXY" || fail "switch restoration failed"
+      fail "cannot activate staged binary"
+    fi
+    sync -f "$EDGE_PROXY" || fail "cannot sync active binary"
+    sync -f /usr/local/bin || fail "cannot sync binary directory"
+    ;;
+  *) fail "unsupported upgrade helper command" ;;
+esac

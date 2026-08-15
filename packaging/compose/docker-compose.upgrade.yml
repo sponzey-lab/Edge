@@ -1,0 +1,7 @@
+services:
+  edge:
+    volumes:
+      - type: bind
+        source: /run/secrets/sponzey-edge-upgrade-passphrase
+        target: /run/secrets/upgrade-passphrase
+        read_only: true

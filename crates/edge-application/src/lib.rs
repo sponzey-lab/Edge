@@ -5,6 +5,10 @@
 
 mod backup;
 pub use backup::*;
+mod operational_upgrade;
+pub use operational_upgrade::*;
+mod support_bundle;
+pub use support_bundle::*;
 
 mod audit;
 pub use audit::*;

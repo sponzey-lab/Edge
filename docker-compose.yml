@@ -1,15 +1,27 @@
 services:
   edge:
-    build: .
+    image: ghcr.io/sponzey-lab/sponzey-edge:${SPONZEY_EDGE_TAG:?set a SemVer tag}@sha256:${SPONZEY_EDGE_DIGEST:?set the matching immutable image digest}
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
     environment:
       SPONZEY_DATA_DIR: /var/lib/sponzey-edge/data
       SPONZEY_CONFIG_FILE: /etc/sponzey-edge/current.toml
       SPONZEY_ADMIN_BIND: 127.0.0.1:9443
       SPONZEY_LOG_MODE: product
-    ports:
-      - "8080:8080"
     volumes:
       - edge-data:/var/lib/sponzey-edge/data
+    tmpfs:
+      - /tmp:mode=1777,noexec,nosuid,size=16m
+    healthcheck:
+      test: ["CMD", "edge-proxy", "probe", "ready", "--admin-bind", "127.0.0.1:9443"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
 volumes:
   edge-data:

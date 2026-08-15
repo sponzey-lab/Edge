@@ -216,7 +216,7 @@ fn parse_pairs(
     args: &[String],
     allowed: &[&str],
 ) -> Result<BTreeMap<String, String>, HarnessError> {
-    if args.len() != allowed.len() * 2 || args.len() % 2 != 0 {
+    if args.len() != allowed.len() * 2 || !args.len().is_multiple_of(2) {
         return Err(HarnessError::new(
             "connection churn arguments are incomplete",
         ));

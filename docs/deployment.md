@@ -5,6 +5,48 @@ is read once; runtime env mutation cannot change retry, passive health, drain or
 log mode. Use Admin apply/rollback. Restart resets transient passive counters and
 drain counts to zero while desired administrative state remains configured.
 
+## Local operational probes and termination
+
+The unauthenticated operational endpoints expose only a status value; they do
+not return routes, revisions, upstreams, or configuration. Call them on the
+loopback Admin bind only:
+
+```text
+GET /api/v1/health/live   -> 200 {"status":"live"} while the process event loop is alive
+GET /api/v1/health/ready  -> 200 {"status":"ready"} only with an active listener/config/command path
+                              503 {"status":"not_ready"} while starting or draining
+```
+
+The equivalent CLI requires an explicit loopback address and returns `0` for a
+successful probe, `1` for a `503` not-ready result, and `2` for invalid bind,
+connection, timeout, or protocol errors:
+
+```sh
+edge-proxy probe live --admin-bind 127.0.0.1:9443
+edge-proxy probe ready --admin-bind 127.0.0.1:9443
+```
+
+On Unix, `SIGTERM` first changes readiness to draining and sends a bounded Core
+drain command. New client connections are no longer accepted; existing work is
+allowed up to 30 seconds before the runtime exits. The signal handler itself
+only writes an atomic flag, and command delivery happens outside signal context.
+
+## Support bundle
+
+An authenticated Admin session can create a bounded diagnostic bundle with
+`POST /api/v1/support-bundles`; the bundled Admin UI uses the same CSRF-protected
+endpoint. The request accepts no artifact list, filesystem path, or service-control
+argument. The server reads only its fixed support layout, rejects sensitive content
+and unsafe paths, and writes a private tar archive at the bootstrap-selected
+`data/support/latest.tar` path. The API/UI expose only archive identity, digest,
+artifact summary, omissions, and size—never the archive path or source contents.
+
+For an offline deep collection, acquire the data-directory exclusive lock first.
+Missing, symlinked, stale, or bound-exceeding artifacts are omitted; secret-bearing
+content fails collection before publication. This is a diagnostic artifact, not a
+backup or a way to export certificates, private keys, headers, cookies, bodies, or
+queries.
+
 ## Local Build
 
 ```bash
@@ -18,7 +60,6 @@ SPONZEY_DATA_DIR=.sponzey \
 SPONZEY_CONFIG_FILE=examples/minimal.toml \
 SPONZEY_ADMIN_BIND=127.0.0.1:9443 \
 SPONZEY_LOG_MODE=product \
-SPONZEY_ACME_CLIENT=fake \
 target/release/edge-proxy
 ```
 
@@ -102,8 +143,26 @@ runtime policy mechanism.
 
 ## Docker Compose
 
+Official Compose runs a published Linux image only. Set the SemVer tag and its
+matching immutable GHCR manifest digest from the release manifest, then start:
+
 ```bash
-docker compose up --build
+sudo ./compose/install.sh \
+  --image-tag vX.Y.Z \
+  --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX
+sudo docker compose --project-directory /etc/sponzey-edge/compose \
+  --file /etc/sponzey-edge/compose/docker-compose.yml up -d --wait
+```
+
+The service uses Linux host networking so the Admin API remains reachable only
+at host `127.0.0.1:9443`; it has a read-only root filesystem, no capabilities,
+and its healthcheck runs `edge-proxy probe ready` locally. Do not expose the
+Admin port through a Docker port mapping.
+
+For local source development only, use the explicit override and profile:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml --profile local-build up --build
 ```
 
 Current image packages:
@@ -111,6 +170,14 @@ Current image packages:
 - `edge-proxy` release binary
 - `examples/minimal.toml`
 - static Admin Web UI assets
+
+## Certificate automation status
+
+Manual certificates and private PKI are the supported certificate paths. Fake
+ACME/HTTP-01 tests remain implementation boundaries only. Let’s Encrypt or other
+external CA issuance and renewal automation are explicitly deferred and must not
+be enabled, scheduled, or represented as available until separately approved and
+verified.
 
 ## Data Paths
 
@@ -170,17 +237,11 @@ import or set the current config revision.
   snapshot mio runtime.
 - WebSocket upgrade tunneling after upstream `101 Switching Protocols` is
   covered against the snapshot mio runtime.
-- Local self-signed HTTPS forwarding is covered through the unified mio runtime.
-  HTTP-01 issue token lifecycle is covered through the bound
-  Admin API and runtime HTTP listener with the default fake ACME adapter. Fake
-  issue responses use `fake-acme-staging` and are not valid external Let's
-  Encrypt evidence. The same config-file startup path can wire the real
-  Let's Encrypt staging adapter by setting
-  `SPONZEY_ACME_CLIENT=letsencrypt-staging` at process start, but that feature
-  is deferred to Post-MVP work. Multi-cert SNI selection is covered by the same
-  unified runtime. External Let's Encrypt staging is documented in
-  `docs/acme-staging.md`, requires a real `letsencrypt_staging` adapter source,
-  and requires an approved public test domain when resumed.
+- Local self-signed HTTPS forwarding and multi-cert SNI selection are covered
+  through the unified mio runtime. HTTP-01/fake-ACME tests remain legacy
+  implementation boundaries only; they are not an operator path, release
+  evidence, or a certificate-issuance capability. External CA staging and
+  renewal remain deferred until a separately approved scope reopens them.
 - Runtime hot certificate install loads the target certificate through the
   file-backed certificate store outside the event loop, validates the rustls
   config at the adapter boundary, and replaces the TLS runtime snapshot only
@@ -254,7 +315,8 @@ manual evidence rather than deleted script wrappers:
 
 - config file startup validates before listener bind
 - bound Admin API HTTP server can apply and rollback revisions
-- Docker Compose build and startup succeed with `docker compose up --build`
+- official Docker Compose installation uses the published tag+digest package path;
+  the local-build override is development-only
 - local HTTPS self-signed smoke passes
 - private key permissions remain covered by automated tests or an explicit manual check
 - product logs exclude secrets and request/response bodies

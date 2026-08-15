@@ -1479,21 +1479,19 @@ impl AuditLedgerReader for FileAuditLedger {
             .rev()
             .filter(|view| {
                 view.sequence < before
-                    && query
-                        .action
-                        .map_or(true, |value| value == view.record.action)
+                    && query.action.is_none_or(|value| value == view.record.action)
                     && query
                         .outcome
-                        .map_or(true, |value| Some(value) == view.record.outcome)
+                        .is_none_or(|value| Some(value) == view.record.outcome)
                     && query
                         .target_kind
-                        .map_or(true, |value| value == view.record.target_kind)
-                    && query.from_epoch_seconds.map_or(true, |value| {
-                        view.record.context.received_at_epoch_seconds >= value
-                    })
-                    && query.to_epoch_seconds.map_or(true, |value| {
-                        view.record.context.received_at_epoch_seconds <= value
-                    })
+                        .is_none_or(|value| value == view.record.target_kind)
+                    && query
+                        .from_epoch_seconds
+                        .is_none_or(|value| view.record.context.received_at_epoch_seconds >= value)
+                    && query
+                        .to_epoch_seconds
+                        .is_none_or(|value| view.record.context.received_at_epoch_seconds <= value)
             })
             .take(query.limit as usize)
             .cloned()

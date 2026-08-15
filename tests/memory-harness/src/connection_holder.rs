@@ -142,7 +142,7 @@ pub fn parse_connection_holder_options(
         "--ready-output",
         "--stop-file",
     ];
-    if args.len() != KEYS.len() * 2 || args.len() % 2 != 0 {
+    if args.len() != KEYS.len() * 2 || !args.len().is_multiple_of(2) {
         return Err(HarnessError::new(
             "connection holder arguments are incomplete",
         ));

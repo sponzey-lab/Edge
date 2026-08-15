@@ -25,6 +25,7 @@ certs/
 secrets/
 logs/
 backups/
+support/
 ```
 
 Certificates written by the Admin certificate issue/renew path are stored through
@@ -55,7 +56,6 @@ SPONZEY_DATA_DIR=.sponzey \
 SPONZEY_CONFIG_FILE=examples/minimal.toml \
 SPONZEY_ADMIN_BIND=127.0.0.1:9443 \
 SPONZEY_LOG_MODE=product \
-SPONZEY_ACME_CLIENT=fake \
 target/release/edge-proxy
 ```
 
@@ -63,8 +63,20 @@ target/release/edge-proxy
 
 ## Docker
 
+Official releases require a tag and matching immutable GHCR digest:
+
 ```bash
-docker compose up --build
+sudo ./compose/install.sh \
+  --image-tag vX.Y.Z \
+  --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX
+sudo docker compose --project-directory /etc/sponzey-edge/compose \
+  --file /etc/sponzey-edge/compose/docker-compose.yml up -d --wait
+```
+
+Local builds are intentionally separate from the official image path:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml --profile local-build up --build
 ```
 
 The image packages:
@@ -92,3 +104,10 @@ hash is not reread from environment during runtime.
 
 Keep admin bind on localhost and do not expose admin endpoints externally
 without authentication.
+
+## Certificate scope
+
+This release supports manual certificates and private PKI only. The bundled fake
+ACME adapter is a test boundary, not an external certificate-issuance feature.
+Do not enable or document Let’s Encrypt/ACME automation until it is explicitly
+reopened as a separately verified scope.

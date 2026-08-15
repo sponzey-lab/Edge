@@ -101,7 +101,7 @@ pub fn parse_websocket_options(args: &[String]) -> Result<WebSocketOptions, Harn
         "--ready-output",
         "--stop-file",
     ];
-    if args.len() != KEYS.len() * 2 || args.len() % 2 != 0 {
+    if args.len() != KEYS.len() * 2 || !args.len().is_multiple_of(2) {
         return Err(HarnessError::new("WebSocket arguments are incomplete"));
     }
     let mut values = BTreeMap::new();

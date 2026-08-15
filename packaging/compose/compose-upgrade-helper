@@ -1,0 +1,141 @@
+#!/bin/sh
+set -eu
+
+PROJECT_DIRECTORY=/etc/sponzey-edge/compose
+COMPOSE_FILE=/etc/sponzey-edge/compose/docker-compose.yml
+UPGRADE_COMPOSE_FILE=/etc/sponzey-edge/compose/docker-compose.upgrade.yml
+RUNTIME_ENV_FILE=/etc/sponzey-edge/compose/runtime.env
+STAGED_ENV_FILE=/etc/sponzey-edge/compose/runtime.env.stage
+PREVIOUS_ENV_FILE=/etc/sponzey-edge/compose/runtime.env.previous
+UPGRADE_PASSPHRASE_FILE=/run/secrets/sponzey-edge-upgrade-passphrase
+BACKUP_ARCHIVE=/var/lib/sponzey-edge/data/backups/upgrade.sponzey
+DOCKER=/usr/bin/docker
+SHA256SUM=/usr/bin/sha256sum
+ROOT_UID=0
+GREP=/usr/bin/grep
+
+fail() {
+  echo "$1" >&2
+  exit 2
+}
+
+require_digest() {
+  case "$1" in sha256:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) fail "invalid image digest" ;;
+  esac
+}
+
+require_valid_digest() {
+  digest=$1
+  case "$digest" in sha256:*) digest=${digest#sha256:} ;; esac
+  [ "${#digest}" -eq 64 ] || fail "invalid image digest"
+  case "$digest" in
+    *[!0123456789abcdef]*|'') fail "invalid image digest" ;;
+  esac
+  NORMALIZED_DIGEST=sha256:$digest
+}
+
+run_compose() {
+  [ -x "$DOCKER" ] || fail "Docker executable is unavailable"
+  [ -f "$RUNTIME_ENV_FILE" ] && [ ! -L "$RUNTIME_ENV_FILE" ] || fail "runtime image manifest is missing or unsafe"
+  "$DOCKER" compose --project-directory "$PROJECT_DIRECTORY" --file "$COMPOSE_FILE" --env-file "$RUNTIME_ENV_FILE" "$@"
+}
+
+run_upgrade_compose() {
+  [ -x "$DOCKER" ] || fail "Docker executable is unavailable"
+  [ -f "$RUNTIME_ENV_FILE" ] && [ ! -L "$RUNTIME_ENV_FILE" ] || fail "runtime image manifest is missing or unsafe"
+  "$DOCKER" compose --project-directory "$PROJECT_DIRECTORY" --file "$COMPOSE_FILE" --file "$UPGRADE_COMPOSE_FILE" --env-file "$RUNTIME_ENV_FILE" "$@"
+}
+
+require_root_owned_artifact() {
+  case "$1" in /*) ;; *) fail "artifact input must be absolute" ;; esac
+  [ -f "$1" ] && [ ! -L "$1" ] || fail "artifact input is missing or unsafe"
+  owner=$(stat -c %u "$1" 2>/dev/null || stat -f %u "$1") || fail "cannot inspect artifact owner"
+  [ "$owner" = "$ROOT_UID" ] || fail "artifact input is not root owned"
+  mode=$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1") || fail "cannot inspect artifact mode"
+  [ $((0$mode & 022)) -eq 0 ] || fail "artifact input is group or world writable"
+}
+
+[ "$#" -ge 5 ] || fail "Compose helper arguments are incomplete"
+[ "$1" = "--project-directory" ] && [ "$2" = "$PROJECT_DIRECTORY" ] || fail "unsupported Compose project"
+[ "$3" = "--file" ] && [ "$4" = "$COMPOSE_FILE" ] || fail "unsupported Compose file"
+shift 4
+command=$1
+shift
+
+case "$command" in
+  preflight)
+    [ "$#" -eq 4 ] && [ "$1" = "--version" ] && [ "$3" = "--image-digest" ] || fail "invalid preflight arguments"
+    case "$2" in v[0-9]*.[0-9]*.[0-9]*) ;; *) fail "invalid version" ;; esac
+    require_valid_digest "$4"
+    run_compose config --quiet
+    umask 077
+    printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\n' "$2" "${NORMALIZED_DIGEST#sha256:}" > "$STAGED_ENV_FILE.tmp" || fail "cannot write staged runtime manifest"
+    chmod 0644 "$STAGED_ENV_FILE.tmp" || fail "cannot set staged runtime manifest mode"
+    mv "$STAGED_ENV_FILE.tmp" "$STAGED_ENV_FILE" || fail "cannot publish staged runtime manifest"
+    ;;
+  drain-stop)
+    [ "$#" -eq 0 ] || fail "drain-stop takes no arguments"
+    run_compose stop --timeout 30 edge
+    ;;
+  start-ready)
+    [ "$#" -eq 0 ] || fail "start-ready takes no arguments"
+    run_compose up --no-build --no-recreate --pull never --detach edge
+    run_compose exec -T edge edge-proxy probe ready --admin-bind 127.0.0.1:9443
+    ;;
+  admit-artifact)
+    [ "$#" -eq 4 ] && [ "$1" = "--input" ] && [ "$3" = "--image-digest" ] || fail "invalid admission arguments"
+    require_valid_digest "$4"
+    require_root_owned_artifact "$2"
+    [ -x "$DOCKER" ] && [ -x "$GREP" ] || fail "required executable is unavailable"
+    "$DOCKER" image load --input "$2"
+    "$DOCKER" image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$NORMALIZED_DIGEST" | "$GREP" -Fx -q "ghcr.io/sponzey-lab/sponzey-edge@$NORMALIZED_DIGEST" || fail "loaded artifact digest mismatch"
+    ;;
+  stage-artifact)
+    [ "$#" -eq 2 ] && [ "$1" = "--image-digest" ] || fail "invalid stage arguments"
+    require_valid_digest "$2"
+    [ -f "$STAGED_ENV_FILE" ] && [ ! -L "$STAGED_ENV_FILE" ] || fail "staged runtime manifest is missing or unsafe"
+    owner=$(stat -c %u "$STAGED_ENV_FILE" 2>/dev/null || stat -f %u "$STAGED_ENV_FILE") || fail "cannot inspect staged runtime manifest owner"
+    [ "$owner" = "$ROOT_UID" ] || fail "staged runtime manifest is not root owned"
+    expected_manifest=$(printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s' "$(sed -n 's/^SPONZEY_EDGE_TAG=//p' "$STAGED_ENV_FILE")" "${NORMALIZED_DIGEST#sha256:}")
+    [ "$(cat "$STAGED_ENV_FILE")" = "$expected_manifest" ] || fail "staged runtime manifest digest mismatch"
+    ;;
+  switch-staged)
+    [ "$#" -eq 0 ] || fail "switch-staged takes no arguments"
+    [ -f "$RUNTIME_ENV_FILE" ] && [ ! -L "$RUNTIME_ENV_FILE" ] || fail "active runtime manifest is missing or unsafe"
+    [ -f "$STAGED_ENV_FILE" ] && [ ! -L "$STAGED_ENV_FILE" ] || fail "staged runtime manifest is missing or unsafe"
+    if [ -e "$PREVIOUS_ENV_FILE" ] || [ -L "$PREVIOUS_ENV_FILE" ]; then
+      [ -f "$PREVIOUS_ENV_FILE" ] && [ ! -L "$PREVIOUS_ENV_FILE" ] || fail "previous runtime manifest is unsafe"
+      rm -f "$PREVIOUS_ENV_FILE" || fail "cannot remove previous runtime manifest"
+    fi
+    mv "$RUNTIME_ENV_FILE" "$PREVIOUS_ENV_FILE" || fail "cannot preserve active runtime manifest"
+    if ! mv "$STAGED_ENV_FILE" "$RUNTIME_ENV_FILE"; then
+      mv "$PREVIOUS_ENV_FILE" "$RUNTIME_ENV_FILE" || fail "cannot restore active runtime manifest"
+      fail "cannot activate staged runtime manifest"
+    fi
+    ;;
+  rollback)
+    [ "$#" -eq 4 ] && [ "$1" = "--backup-id" ] && [ "$3" = "--previous-artifact-digest" ] || fail "invalid rollback arguments"
+    require_valid_digest "$4"
+    [ -f "$PREVIOUS_ENV_FILE" ] && [ ! -L "$PREVIOUS_ENV_FILE" ] || fail "previous runtime manifest is missing or unsafe"
+    previous_digest=$(sed -n 's/^SPONZEY_EDGE_DIGEST=//p' "$PREVIOUS_ENV_FILE")
+    require_valid_digest "$previous_digest"
+    [ "$NORMALIZED_DIGEST" = "sha256:$4" ] || fail "previous runtime manifest digest mismatch"
+    mv "$PREVIOUS_ENV_FILE" "$RUNTIME_ENV_FILE" || fail "cannot restore previous runtime manifest"
+    ;;
+  backup-create-verify)
+    [ "$#" -eq 2 ] && [ "$1" = "--passphrase-file" ] && [ "$2" = "$UPGRADE_PASSPHRASE_FILE" ] || fail "unsupported upgrade passphrase file"
+    [ -f "$UPGRADE_PASSPHRASE_FILE" ] && [ ! -L "$UPGRADE_PASSPHRASE_FILE" ] || fail "upgrade passphrase file is missing or unsafe"
+    previous_digest=$(sed -n 's/^SPONZEY_EDGE_DIGEST=//p' "$RUNTIME_ENV_FILE")
+    require_valid_digest "$previous_digest"
+    previous_artifact_digest=$NORMALIZED_DIGEST
+    run_upgrade_compose run --rm --no-deps edge edge-proxy backup create --data-dir /var/lib/sponzey-edge/data --output "$BACKUP_ARCHIVE" --passphrase-file /run/secrets/upgrade-passphrase >/dev/null
+    run_upgrade_compose run --rm --no-deps edge edge-proxy backup verify --input "$BACKUP_ARCHIVE" --passphrase-file /run/secrets/upgrade-passphrase >/dev/null
+    [ -x "$SHA256SUM" ] || fail "checksum executable is unavailable"
+    require_root_owned_artifact "$BACKUP_ARCHIVE"
+    set -- $("$SHA256SUM" "$BACKUP_ARCHIVE")
+    require_valid_digest "$1"
+    printf 'backup_id=%s\nprevious_artifact_digest=%s\n' "${NORMALIZED_DIGEST#sha256:}" "$previous_artifact_digest"
+    ;;
+  *) fail "unsupported Compose helper command" ;;
+esac

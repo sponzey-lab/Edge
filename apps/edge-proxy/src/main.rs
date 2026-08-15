@@ -5,8 +5,9 @@ mod process_mode;
 
 use admin_http::{
     spawn_admin_http_server_with_mutations_and_logs, AdminHttpChallengeRuntime,
-    AdminHttpRuntimeWiring, AdminHttpStores, AdminLogReceivers, Http01RuntimeProbe,
-    SharedHttp01TokenStore, SharedRuntimeResourceStatus, SharedRuntimeUpstreamStatus,
+    AdminHttpRuntimeWiring, AdminHttpStores, AdminHttpSupportBundlePaths, AdminLogReceivers,
+    Http01RuntimeProbe, SharedHttp01TokenStore, SharedOperationalRuntimeStatus,
+    SharedRuntimeResourceStatus, SharedRuntimeUpstreamStatus,
 };
 use bootstrap::{
     acme_client_mode_from_env, bootstrap_config_from_env, dev_serve_config_from_env,
@@ -15,24 +16,26 @@ use bootstrap::{
 use edge_adapters::{
     load_rustls_server_config, spawn_metric_registry_collector, spawn_metrics_listener,
     stderr_json_log_sink, stdout_json_log_sink, AgeBackupArchiveReader, AgeBackupArchiveWriter,
-    AuditLedgerOptions, FakeAcmeClient, FileAuditLedger, FileBackupArtifactSource,
-    FileBootstrapConfigSeed, FileCertificateStore, FileDataDirectoryLockManager,
-    FileNewTargetRestorePublisher, FileReplaceRestorePublisher, FileRestoreArchiveExtractor,
-    FileRestorePreflight, FileRestoreProvenanceWriter, FileRestoreTransactionStore,
-    FileRevisionRepository, FileSecretStore, FileTrustBundleStore, LetsEncryptHttp01AcmeClient,
-    MetricChannelPublisher, PreparedHealthTlsRegistry, RandomOperationIdGenerator,
-    RustlsClientTlsSessionFactory, RustlsServerTlsSessionFactory, Sha256BackupManifestDigester,
-    SharedFileAuditLedger, SystemClock, TlsRuntimeSnapshot,
+    AuditLedgerOptions, CommandOfflineUpgradeDeployment, FakeAcmeClient, FileAuditLedger,
+    FileBackupArtifactSource, FileBootstrapConfigSeed, FileCertificateStore,
+    FileDataDirectoryLockManager, FileNewTargetRestorePublisher, FileOfflineUpgradeJournalStore,
+    FileReplaceRestorePublisher, FileRestoreArchiveExtractor, FileRestorePreflight,
+    FileRestoreProvenanceWriter, FileRestoreTransactionStore, FileRevisionRepository,
+    FileSecretStore, FileTrustBundleStore, LetsEncryptHttp01AcmeClient, MetricChannelPublisher,
+    PreparedHealthTlsRegistry, RandomOperationIdGenerator, RustlsClientTlsSessionFactory,
+    RustlsServerTlsSessionFactory, Sha256BackupManifestDigester, SharedFileAuditLedger,
+    SystemClock, SystemUpgradeHelperProcessExecutor, SystemdUpgradeHelperRunner,
+    TlsRuntimeSnapshot, UpgradeHelperProcessExecutor,
 };
 #[cfg(test)]
 use edge_application::parse_mvp_config;
 use edge_application::{
-    build_info_metric, certificate_expiry_metric, initialize_audit_ledger,
-    plan_upstream_tls_preparation, process_start_time_metric, upstream_availability_metric,
-    CreateBackupInput, CreateBackupUseCase, RecoverRestoreUseCase, ReplaceRestoreBackupInput,
-    ReplaceRestoreBackupUseCase, ResolveStartupConfigUseCase, RestoreBackupInput,
-    RestoreBackupUseCase, StartupConfigOrigin, TlsFailureObservation, TlsFailureProductSampler,
-    VerifyBackupInput, VerifyBackupUseCase,
+    build_info_metric, certificate_expiry_metric, execute_journaled_offline_upgrade_with_receipt,
+    initialize_audit_ledger, plan_upstream_tls_preparation, process_start_time_metric,
+    recover_offline_upgrade, upstream_availability_metric, CreateBackupInput, CreateBackupUseCase,
+    RecoverRestoreUseCase, ReplaceRestoreBackupInput, ReplaceRestoreBackupUseCase,
+    ResolveStartupConfigUseCase, RestoreBackupInput, RestoreBackupUseCase, StartupConfigOrigin,
+    TlsFailureObservation, TlsFailureProductSampler, VerifyBackupInput, VerifyBackupUseCase,
 };
 use edge_core::legacy_single_upstream::{run_single_upstream_proxy, SingleUpstreamProxyConfig};
 use edge_core::snapshot_http::{
@@ -47,7 +50,7 @@ use edge_domain::{
     AppError, AuditAction, AuditActorKind, AuditAdmissionState, AuditAuthoritativeFact,
     AuditContext, AuditOperationId, AuditRequestId, AuditTargetId, BootstrapConfig, CertificateRef,
     ClientAuthPolicy, CommandAck, ConfigRevisionId, ConfigSnapshot, CoreCommand, ErrorCode,
-    ListenerProtocol, RuntimeResourcePolicy, TrustBundleRef,
+    ListenerProtocol, OperationalLifecycle, RuntimeResourcePolicy, TrustBundleRef,
 };
 use edge_ports::{
     AcmeClient, AuditAdmissionController, AuditAuthoritativeStateInspector, AuditLedgerReader,
@@ -58,7 +61,7 @@ use edge_ports::{
 #[cfg(test)]
 use edge_ports::{ConfigRevisionRepository, MetricEvent};
 use health_runtime::{HealthRuntimeController, HealthRuntimeObservability};
-use process_mode::{parse_process_mode, ProcessMode};
+use process_mode::{parse_process_mode, ProbeOptions, ProbeTarget, ProcessMode};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 #[cfg(unix)]
@@ -67,11 +70,24 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
+const SIGTERM_DRAIN_DEADLINE_MS: u64 = 30_000;
+
+#[cfg(unix)]
+static SIGTERM_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn handle_sigterm(_signal: libc::c_int) {
+    // SAFETY: AtomicBool::store is lock-free on supported Unix targets and the
+    // handler performs no allocation, I/O, locking, or command delivery.
+    SIGTERM_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn main() -> std::io::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mode = parse_process_mode(&args).map_err(app_error_to_io)?;
     match mode {
         ProcessMode::Serve => run_serve(),
+        ProcessMode::Probe(options) => std::process::exit(run_probe(options)),
         maintenance => run_maintenance(maintenance),
     }
 }
@@ -89,7 +105,96 @@ fn run_maintenance(mode: ProcessMode) -> std::io::Result<()> {
         }
         ProcessMode::RestoreRecover(options) => run_restore_recover(options),
         ProcessMode::AuditVerify(options) => run_audit_verify(options),
+        ProcessMode::Upgrade(options) => run_upgrade(options),
+        ProcessMode::UpgradeRecover(options) => run_upgrade_recover(options),
+        ProcessMode::Probe(options) => std::process::exit(run_probe(options)),
         ProcessMode::Serve => run_serve(),
+    }
+}
+
+fn run_upgrade(options: process_mode::UpgradeOptions) -> std::io::Result<()> {
+    let receipt = run_upgrade_with_executor(options, SystemUpgradeHelperProcessExecutor)
+        .map_err(app_error_to_io)?;
+    println!(
+        "{}",
+        render_upgrade_result(&receipt.operation_id, receipt.state)
+    );
+    Ok(())
+}
+
+fn run_upgrade_with_executor<E: UpgradeHelperProcessExecutor>(
+    options: process_mode::UpgradeOptions,
+    executor: E,
+) -> Result<edge_application::OfflineUpgradeExecutionReceipt, AppError> {
+    let runner = SystemdUpgradeHelperRunner::new(executor);
+    let mut deployment = CommandOfflineUpgradeDeployment::new(runner);
+    let mut journals = FileOfflineUpgradeJournalStore::new(&options.data_dir)?;
+    execute_journaled_offline_upgrade_with_receipt(&mut deployment, &mut journals, options.request)
+}
+
+fn run_upgrade_recover(options: process_mode::UpgradeRecoverOptions) -> std::io::Result<()> {
+    let state =
+        run_upgrade_recover_with_executor(options.clone(), SystemUpgradeHelperProcessExecutor)
+            .map_err(app_error_to_io)?;
+    println!("{}", render_upgrade_result(&options.operation_id, state));
+    Ok(())
+}
+
+fn run_upgrade_recover_with_executor<E: UpgradeHelperProcessExecutor>(
+    options: process_mode::UpgradeRecoverOptions,
+    executor: E,
+) -> Result<edge_domain::OfflineUpgradeState, AppError> {
+    let runner = SystemdUpgradeHelperRunner::new(executor);
+    let mut deployment = CommandOfflineUpgradeDeployment::new(runner);
+    let mut journals = FileOfflineUpgradeJournalStore::new(&options.data_dir)?;
+    recover_offline_upgrade(&mut deployment, &mut journals, &options.operation_id)
+}
+
+fn render_upgrade_result(operation_id: &str, state: edge_domain::OfflineUpgradeState) -> String {
+    let state = match state {
+        edge_domain::OfflineUpgradeState::Committed => "committed",
+        edge_domain::OfflineUpgradeState::RolledBack => "rolled_back",
+        _ => "incomplete",
+    };
+    serde_json::json!({ "result_schema_version": 1, "operation_id": operation_id, "state": state })
+        .to_string()
+}
+
+fn run_probe(options: ProbeOptions) -> i32 {
+    let address = match options.admin_bind.parse::<SocketAddr>() {
+        Ok(address) if address.ip().is_loopback() => address,
+        _ => return 2,
+    };
+    let path = match options.target {
+        ProbeTarget::Live => "/api/v1/health/live",
+        ProbeTarget::Ready => "/api/v1/health/ready",
+    };
+    let expected = match options.target {
+        ProbeTarget::Live => "live",
+        ProbeTarget::Ready => "ready",
+    };
+    let result = (|| -> std::io::Result<String> {
+        use std::io::{Read, Write};
+        let mut stream =
+            std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(2))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+        stream.write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+        Ok(response)
+    })();
+    match result {
+        Ok(response)
+            if response.starts_with("HTTP/1.1 200 ")
+                && response.contains(&format!("\"status\":\"{expected}\"")) =>
+        {
+            0
+        }
+        Ok(response) if response.starts_with("HTTP/1.1 503 ") => 1,
+        _ => 2,
     }
 }
 
@@ -478,6 +583,7 @@ fn run_serve() -> std::io::Result<()> {
         let health_snapshot = admin_snapshot.clone();
         let metrics_config = admin_snapshot.runtime.metrics.clone();
         let admin_bind = admin_snapshot.admin.bind.clone();
+        let operational_lifecycle = Arc::new(std::sync::Mutex::new(OperationalLifecycle::Ready));
         let shared_https_snapshot = Arc::new(RwLock::new(admin_snapshot.clone()));
         let admin_password_hash = load_optional_admin_password_hash(&config.data_dir)?;
         let admin_secrets = FileSecretStore::new(Path::new(&config.data_dir).join("secrets"));
@@ -492,6 +598,11 @@ fn run_serve() -> std::io::Result<()> {
         let (error_log_sender, error_log_receiver) = std::sync::mpsc::sync_channel(1024);
         let (metric_sender, metric_receiver) = std::sync::mpsc::sync_channel(1024);
         let (health_log_sender, health_log_receiver) = std::sync::mpsc::sync_channel(256);
+        install_sigterm_drain_watcher(
+            admin_command_client.clone(),
+            Arc::clone(&operational_lifecycle),
+            health_log_sender.clone(),
+        )?;
         let (tls_failure_sender, tls_failure_receiver) = std::sync::mpsc::sync_channel(256);
         let metric_publisher: Arc<dyn MetricPublisher> =
             Arc::new(MetricChannelPublisher::new(metric_sender.clone()));
@@ -520,6 +631,7 @@ fn run_serve() -> std::io::Result<()> {
             std::sync::Arc::clone(&log_drop_counter),
         );
         let resource_status = SharedRuntimeResourceStatus::default();
+        let operational_runtime_status = SharedOperationalRuntimeStatus::default();
         let mut runtime_trust_store =
             FileTrustBundleStore::new(Path::new(&config.data_dir).join("trust-bundles"));
         let prepared_tls = prepare_tls_runtime_generation(
@@ -578,6 +690,7 @@ fn run_serve() -> std::io::Result<()> {
             .with_passive_observation_dispatcher(health_runtime.clone())
             .with_runtime_status_publisher(runtime_status.clone())
             .with_resource_status_publisher(resource_status.clone())
+            .with_operational_runtime_status_publisher(operational_runtime_status.clone())
             .with_log_drop_counter(std::sync::Arc::clone(&log_drop_counter));
         let _health_log_collector = spawn_product_log_collector(health_log_receiver);
         let _tls_failure_log_collector = spawn_tls_failure_log_collector(tls_failure_receiver);
@@ -620,6 +733,8 @@ fn run_serve() -> std::io::Result<()> {
                 runtime_status_reader: std::sync::Arc::new(runtime_status),
                 resource_status_reader: std::sync::Arc::new(resource_status),
                 metrics_reader: std::sync::Arc::new(metric_snapshot),
+                operational_lifecycle: Arc::clone(&operational_lifecycle),
+                operational_runtime_status_reader: std::sync::Arc::new(operational_runtime_status),
                 product_log: Box::new(stdout_json_log_sink()),
                 log_receivers: AdminLogReceivers {
                     access: access_log_receiver,
@@ -627,6 +742,12 @@ fn run_serve() -> std::io::Result<()> {
                     dropped: log_drop_counter,
                 },
                 audit_ledger: shared_audit,
+                support_bundle_paths: AdminHttpSupportBundlePaths {
+                    source_root: Path::new(&config.data_dir).join("support"),
+                    output: Path::new(&config.data_dir)
+                        .join("support")
+                        .join("latest.tar"),
+                },
             },
         )?;
         println!("edge-proxy admin api listening: bind={admin_bind}");
@@ -635,10 +756,77 @@ fn run_serve() -> std::io::Result<()> {
             proxy_config.listen
         );
         let proxy_result = run_snapshot_http_proxy_mio(proxy_config);
+        if let Ok(mut lifecycle) = operational_lifecycle.lock() {
+            *lifecycle =
+                lifecycle.transition(edge_domain::OperationalLifecycleEvent::DrainCompleted);
+        }
         health_runtime.shutdown();
         proxy_result?;
     }
 
+    Ok(())
+}
+
+#[cfg(unix)]
+fn install_sigterm_drain_watcher(
+    mut command_client: SnapshotRuntimeCommandClient,
+    lifecycle: Arc<std::sync::Mutex<OperationalLifecycle>>,
+    product_log: std::sync::mpsc::SyncSender<StructuredLogEvent>,
+) -> std::io::Result<()> {
+    SIGTERM_REQUESTED.store(false, std::sync::atomic::Ordering::Relaxed);
+    // SAFETY: the handler is an extern C function with the required signature;
+    // it only stores to SIGTERM_REQUESTED, which the watcher consumes outside
+    // signal context.
+    unsafe {
+        libc::signal(
+            libc::SIGTERM,
+            handle_sigterm as *const () as libc::sighandler_t,
+        );
+    }
+    std::thread::spawn(move || loop {
+        if SIGTERM_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            begin_sigterm_drain(&mut command_client, &lifecycle, &product_log);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    });
+    Ok(())
+}
+
+fn begin_sigterm_drain<C>(
+    command_client: &mut C,
+    lifecycle: &Arc<std::sync::Mutex<OperationalLifecycle>>,
+    product_log: &std::sync::mpsc::SyncSender<StructuredLogEvent>,
+) where
+    C: CoreCommandClient,
+{
+    if let Ok(mut current) = lifecycle.lock() {
+        *current = current.transition(edge_domain::OperationalLifecycleEvent::TerminationRequested);
+    }
+    let acknowledgement = command_client.send(CoreCommand::BeginDrain {
+        deadline_ms: SIGTERM_DRAIN_DEADLINE_MS,
+    });
+    if !acknowledgement.is_success() {
+        if let Ok(mut current) = lifecycle.lock() {
+            *current = current.transition(edge_domain::OperationalLifecycleEvent::Failed);
+        }
+        let _ = product_log.try_send(StructuredLogEvent {
+            component: "edge-proxy".to_string(),
+            event: "process.drain.command_rejected".to_string(),
+            fields: vec![(
+                "error_code".to_string(),
+                "RUNTIME_COMMAND_REJECTED".to_string(),
+            )],
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn install_sigterm_drain_watcher(
+    _command_client: SnapshotRuntimeCommandClient,
+    _lifecycle: Arc<std::sync::Mutex<OperationalLifecycle>>,
+    _product_log: std::sync::mpsc::SyncSender<StructuredLogEvent>,
+) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -1649,6 +1837,124 @@ mod tests {
     use super::*;
     use edge_domain::LogMode;
     use std::io::{Read, Write};
+
+    #[derive(Default)]
+    struct FakeUpgradeHelper {
+        invocations: Vec<edge_adapters::UpgradeHelperInvocation>,
+        fail: bool,
+    }
+
+    impl edge_adapters::UpgradeHelperProcessExecutor for FakeUpgradeHelper {
+        fn execute_upgrade_helper(
+            &mut self,
+            invocation: edge_adapters::UpgradeHelperInvocation,
+        ) -> Result<edge_adapters::UpgradeHelperProcessOutput, AppError> {
+            let stdout = if invocation.arguments.first().map(String::as_str)
+                == Some("backup-create-verify")
+            {
+                "backup_id=backup-1\nprevious_artifact_digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n".to_string()
+            } else {
+                String::new()
+            };
+            self.invocations.push(invocation);
+            Ok(edge_adapters::UpgradeHelperProcessOutput {
+                exit_code: if self.fail { 1 } else { 0 },
+                stdout,
+            })
+        }
+    }
+
+    fn upgrade_options(root: std::path::PathBuf) -> process_mode::UpgradeOptions {
+        process_mode::UpgradeOptions {
+            data_dir: root,
+            request: edge_domain::OfflineUpgradeRequest {
+                target_version: "v1.2.3".to_string(),
+                image_digest: "b".repeat(64),
+                artifact_file: "/root/edge-proxy-1.2.3".to_string(),
+                passphrase_file: "/run/secrets/upgrade".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn upgrade_maintenance_wires_journaled_helper_commands_without_serve_mode() {
+        let root = temp_root("upgrade-maintenance");
+        let result =
+            run_upgrade_with_executor(upgrade_options(root.clone()), FakeUpgradeHelper::default());
+        assert_eq!(
+            result.unwrap(),
+            edge_application::OfflineUpgradeExecutionReceipt {
+                operation_id: "upgrade-backup-1".to_string(),
+                state: edge_domain::OfflineUpgradeState::Committed,
+            }
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_helper_failure_returns_stable_error_before_runtime_is_started() {
+        let root = temp_root("upgrade-helper-failure");
+        let error = run_upgrade_with_executor(
+            upgrade_options(root.clone()),
+            FakeUpgradeHelper {
+                fail: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::RuntimeCommandRejected);
+        assert!(!root.join("upgrade-journal").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upgrade_recover_uses_the_same_fixed_helper_and_journal_boundary() {
+        let root = temp_root("upgrade-recover");
+        let mut journals = FileOfflineUpgradeJournalStore::new(&root).unwrap();
+        edge_ports::OfflineUpgradeJournalStore::persist_upgrade_journal(
+            &mut journals,
+            &edge_domain::OfflineUpgradeJournal {
+                operation_id: "upgrade-backup-1".to_string(),
+                state: edge_domain::OfflineUpgradeState::Switched,
+                backup_id: "backup-1".to_string(),
+                previous_artifact_digest: "a".repeat(64),
+                target_artifact_digest: "b".repeat(64),
+            },
+        )
+        .unwrap();
+        let state = run_upgrade_recover_with_executor(
+            process_mode::UpgradeRecoverOptions {
+                data_dir: root.clone(),
+                operation_id: "upgrade-backup-1".to_string(),
+            },
+            FakeUpgradeHelper::default(),
+        )
+        .unwrap();
+        assert_eq!(state, edge_domain::OfflineUpgradeState::RolledBack);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_result_is_bounded_and_does_not_expose_path_references() {
+        let result = render_upgrade_result(
+            "upgrade-backup-1",
+            edge_domain::OfflineUpgradeState::Committed,
+        );
+        assert_eq!(
+            result,
+            "{\"operation_id\":\"upgrade-backup-1\",\"result_schema_version\":1,\"state\":\"committed\"}"
+        );
+        assert!(!result.contains("/root/"));
+        assert!(!result.contains("passphrase"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_handler_only_sets_the_watcher_flag() {
+        SIGTERM_REQUESTED.store(false, std::sync::atomic::Ordering::Relaxed);
+        handle_sigterm(libc::SIGTERM);
+        assert!(SIGTERM_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed));
+    }
 
     fn temp_root(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -3314,6 +3620,31 @@ mod tests {
                 CommandAck::accepted()
             }
         }
+    }
+
+    #[test]
+    fn rejected_sigterm_drain_marks_lifecycle_failed_and_logs_only_error_code() {
+        let mut command_client = RecordingCoreCommandClient {
+            reject: true,
+            ..Default::default()
+        };
+        let lifecycle = Arc::new(std::sync::Mutex::new(OperationalLifecycle::Ready));
+        let (log_sender, log_receiver) = std::sync::mpsc::sync_channel(1);
+
+        begin_sigterm_drain(&mut command_client, &lifecycle, &log_sender);
+
+        assert_eq!(*lifecycle.lock().unwrap(), OperationalLifecycle::Failed);
+        assert!(command_client.commands.is_empty());
+        let event = log_receiver.try_recv().unwrap();
+        assert_eq!(event.component, "edge-proxy");
+        assert_eq!(event.event, "process.drain.command_rejected");
+        assert_eq!(
+            event.fields,
+            vec![(
+                "error_code".to_string(),
+                "RUNTIME_COMMAND_REJECTED".to_string()
+            )]
+        );
     }
 
     #[test]

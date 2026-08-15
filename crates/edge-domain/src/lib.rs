@@ -7,6 +7,12 @@ mod backup;
 pub use backup::*;
 mod audit;
 pub use audit::*;
+mod operational_lifecycle;
+pub use operational_lifecycle::*;
+mod operational_upgrade;
+pub use operational_upgrade::*;
+mod support_bundle;
+pub use support_bundle::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -1667,6 +1673,9 @@ pub enum CoreCommand {
         certificate_ref: CertificateRef,
     },
     RefreshRouteTable,
+    BeginDrain {
+        deadline_ms: u64,
+    },
     Shutdown,
 }
 
@@ -1821,6 +1830,8 @@ pub enum ErrorCode {
     HttpRequestBodyTooLarge,
     HttpRequestLineTooLarge,
     HttpTransferEncodingContentLengthConflict,
+    SupportBundleBoundsExceeded,
+    SupportBundleReportInvalid,
     RuntimeCommandRejected,
     RuntimeHealthUnavailable,
     RuntimeUpstreamBadGateway,
@@ -1954,6 +1965,8 @@ impl ErrorCode {
             Self::HttpTransferEncodingContentLengthConflict => {
                 "HTTP_TRANSFER_ENCODING_CONTENT_LENGTH_CONFLICT"
             }
+            Self::SupportBundleBoundsExceeded => "SUPPORT_BUNDLE_BOUNDS_EXCEEDED",
+            Self::SupportBundleReportInvalid => "SUPPORT_BUNDLE_REPORT_INVALID",
             Self::RuntimeCommandRejected => "RUNTIME_COMMAND_REJECTED",
             Self::RuntimeHealthUnavailable => "RUNTIME_HEALTH_UNAVAILABLE",
             Self::RuntimeUpstreamBadGateway => "RUNTIME_UPSTREAM_BAD_GATEWAY",
@@ -2094,6 +2107,12 @@ impl ErrorCode {
             Self::HttpRequestLineTooLarge => "The request line is too large.",
             Self::HttpTransferEncodingContentLengthConflict => {
                 "Transfer-Encoding and Content-Length cannot be combined."
+            }
+            Self::SupportBundleBoundsExceeded => {
+                "The support bundle exceeded its collection bounds."
+            }
+            Self::SupportBundleReportInvalid => {
+                "The support bundle collector returned an invalid report."
             }
             Self::RuntimeCommandRejected => "The runtime rejected the command.",
             Self::RuntimeHealthUnavailable => "Runtime health status is unavailable.",

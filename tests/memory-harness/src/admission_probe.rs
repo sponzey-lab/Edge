@@ -171,7 +171,7 @@ pub fn parse_admission_probe_options(
     args: &[String],
 ) -> Result<AdmissionProbeOptions, HarnessError> {
     const KEYS: [&str; 3] = ["--address", "--connect-timeout-ms", "--terminal-timeout-ms"];
-    if args.len() != KEYS.len() * 2 || args.len() % 2 != 0 {
+    if args.len() != KEYS.len() * 2 || !args.len().is_multiple_of(2) {
         return Err(HarnessError::new(
             "admission probe arguments are incomplete",
         ));

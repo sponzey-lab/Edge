@@ -137,7 +137,7 @@ pub fn parse_slow_header_options(args: &[String]) -> Result<SlowHeaderOptions, H
         "--max-response-bytes",
         "--ready-output",
     ];
-    if args.len() != KEYS.len() * 2 || args.len() % 2 != 0 {
+    if args.len() != KEYS.len() * 2 || !args.len().is_multiple_of(2) {
         return Err(HarnessError::new("slow header arguments are incomplete"));
     }
     let mut values = BTreeMap::new();

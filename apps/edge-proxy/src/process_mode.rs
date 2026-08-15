@@ -1,4 +1,4 @@
-use edge_domain::{AppError, ErrorCode};
+use edge_domain::{AppError, ErrorCode, OfflineUpgradeRequest};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -35,6 +35,30 @@ pub struct AuditVerifyOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeOptions {
+    pub target: ProbeTarget,
+    pub admin_bind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpgradeOptions {
+    pub data_dir: PathBuf,
+    pub request: OfflineUpgradeRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpgradeRecoverOptions {
+    pub data_dir: PathBuf,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeTarget {
+    Live,
+    Ready,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessMode {
     Serve,
     BackupCreate(BackupCreateOptions),
@@ -42,6 +66,9 @@ pub enum ProcessMode {
     Restore(RestoreOptions),
     RestoreRecover(RestoreRecoverOptions),
     AuditVerify(AuditVerifyOptions),
+    Probe(ProbeOptions),
+    Upgrade(UpgradeOptions),
+    UpgradeRecover(UpgradeRecoverOptions),
 }
 
 pub fn parse_process_mode(args: &[String]) -> Result<ProcessMode, AppError> {
@@ -57,8 +84,57 @@ pub fn parse_process_mode(args: &[String]) -> Result<ProcessMode, AppError> {
                 data_dir: required_path(&parsed.values, "--data-dir")?,
             }))
         }
+        [probe, target, options @ ..] if probe == "probe" => parse_probe_mode(target, options),
+        [upgrade, recover, options @ ..] if upgrade == "upgrade" && recover == "recover" => {
+            parse_upgrade_recover_mode(options)
+        }
+        [upgrade, options @ ..] if upgrade == "upgrade" => parse_upgrade_mode(options),
         _ => Err(invalid_command()),
     }
+}
+
+fn parse_upgrade_recover_mode(tokens: &[String]) -> Result<ProcessMode, AppError> {
+    let parsed = parse_options(tokens, &["--data-dir", "--operation-id"], &[])?;
+    Ok(ProcessMode::UpgradeRecover(UpgradeRecoverOptions {
+        data_dir: required_path(&parsed.values, "--data-dir")?,
+        operation_id: required_value(&parsed.values, "--operation-id")?.to_string(),
+    }))
+}
+
+fn parse_upgrade_mode(tokens: &[String]) -> Result<ProcessMode, AppError> {
+    let parsed = parse_options(
+        tokens,
+        &[
+            "--data-dir",
+            "--version",
+            "--image-digest",
+            "--artifact-file",
+            "--passphrase-file",
+        ],
+        &[],
+    )?;
+    Ok(ProcessMode::Upgrade(UpgradeOptions {
+        data_dir: required_path(&parsed.values, "--data-dir")?,
+        request: OfflineUpgradeRequest {
+            target_version: required_value(&parsed.values, "--version")?.to_string(),
+            image_digest: required_value(&parsed.values, "--image-digest")?.to_string(),
+            artifact_file: required_value(&parsed.values, "--artifact-file")?.to_string(),
+            passphrase_file: required_value(&parsed.values, "--passphrase-file")?.to_string(),
+        },
+    }))
+}
+
+fn parse_probe_mode(target: &str, tokens: &[String]) -> Result<ProcessMode, AppError> {
+    let target = match target {
+        "live" => ProbeTarget::Live,
+        "ready" => ProbeTarget::Ready,
+        _ => return Err(invalid_command()),
+    };
+    let parsed = parse_options(tokens, &["--admin-bind"], &[])?;
+    Ok(ProcessMode::Probe(ProbeOptions {
+        target,
+        admin_bind: required_value(&parsed.values, "--admin-bind")?.to_string(),
+    }))
 }
 
 fn parse_backup_mode(operation: &str, tokens: &[String]) -> Result<ProcessMode, AppError> {
@@ -168,9 +244,10 @@ fn invalid_command() -> AppError {
 mod tests {
     use super::{
         parse_process_mode, AuditVerifyOptions, BackupCreateOptions, BackupVerifyOptions,
-        ProcessMode, RestoreOptions, RestoreRecoverOptions,
+        ProbeOptions, ProbeTarget, ProcessMode, RestoreOptions, RestoreRecoverOptions,
+        UpgradeOptions, UpgradeRecoverOptions,
     };
-    use edge_domain::ErrorCode;
+    use edge_domain::{ErrorCode, OfflineUpgradeRequest};
     use std::path::PathBuf;
 
     fn args(values: &[&str]) -> Vec<String> {
@@ -255,6 +332,24 @@ mod tests {
     }
 
     #[test]
+    fn probe_requires_an_explicit_loopback_admin_bind_and_target() {
+        assert_eq!(
+            parse_process_mode(&args(&["probe", "ready", "--admin-bind", "127.0.0.1:9443"]))
+                .unwrap(),
+            ProcessMode::Probe(ProbeOptions {
+                target: ProbeTarget::Ready,
+                admin_bind: "127.0.0.1:9443".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_process_mode(&args(&["probe", "ready"]))
+                .unwrap_err()
+                .code,
+            ErrorCode::ProcessCommandInvalid
+        );
+    }
+
+    #[test]
     fn backup_verify_and_recover_options_are_typed_without_hidden_defaults() {
         assert_eq!(
             parse_process_mode(&args(&[
@@ -285,6 +380,96 @@ mod tests {
                 target_data_dir: PathBuf::from("/restored"),
                 operation_id: "restore-001".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn upgrade_requires_typed_operator_identity_and_secret_file_reference() {
+        assert_eq!(
+            parse_process_mode(&args(&[
+                "upgrade",
+                "--data-dir",
+                "/var/lib/sponzey-edge/data",
+                "--version",
+                "v1.2.3",
+                "--image-digest",
+                &"a".repeat(64),
+                "--artifact-file",
+                "/root/edge-proxy-1.2.3",
+                "--passphrase-file",
+                "/run/secrets/upgrade-passphrase"
+            ]))
+            .unwrap(),
+            ProcessMode::Upgrade(UpgradeOptions {
+                data_dir: PathBuf::from("/var/lib/sponzey-edge/data"),
+                request: OfflineUpgradeRequest {
+                    target_version: "v1.2.3".to_string(),
+                    image_digest: "a".repeat(64),
+                    artifact_file: "/root/edge-proxy-1.2.3".to_string(),
+                    passphrase_file: "/run/secrets/upgrade-passphrase".to_string(),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn upgrade_rejects_partial_duplicate_and_inline_secret_options() {
+        for values in [
+            vec!["upgrade", "--data-dir", "/data", "--version", "v1.2.3"],
+            vec![
+                "upgrade",
+                "--data-dir",
+                "/data",
+                "--version",
+                "v1.2.3",
+                "--version",
+                "v1.2.4",
+                "--image-digest",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "--passphrase-file",
+                "/run/secret",
+            ],
+            vec![
+                "upgrade",
+                "--data-dir",
+                "/data",
+                "--version",
+                "v1.2.3",
+                "--image-digest",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "--passphrase",
+                "not-allowed",
+            ],
+        ] {
+            assert_eq!(
+                parse_process_mode(&args(&values)).unwrap_err().code,
+                ErrorCode::ProcessCommandInvalid
+            );
+        }
+    }
+
+    #[test]
+    fn upgrade_recover_requires_typed_data_directory_and_operation_id() {
+        assert_eq!(
+            parse_process_mode(&args(&[
+                "upgrade",
+                "recover",
+                "--data-dir",
+                "/var/lib/sponzey-edge/data",
+                "--operation-id",
+                "upgrade-backup-1",
+            ]))
+            .unwrap(),
+            ProcessMode::UpgradeRecover(UpgradeRecoverOptions {
+                data_dir: PathBuf::from("/var/lib/sponzey-edge/data"),
+                operation_id: "upgrade-backup-1".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_process_mode(&args(&["upgrade", "recover", "--data-dir", "/data"]))
+                .unwrap_err()
+                .code,
+            ErrorCode::ProcessCommandInvalid
         );
     }
 }

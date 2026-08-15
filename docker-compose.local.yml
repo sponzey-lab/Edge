@@ -1,0 +1,7 @@
+services:
+  edge:
+    profiles: ["local-build"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sponzey-edge:local

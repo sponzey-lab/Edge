@@ -52,6 +52,15 @@ feature count.
 External Let's Encrypt staging/production issuance and operational renewal validation are
 deferred to Post-MVP work. Current TLS operation uses manual or private-PKI certificates.
 
+## Support bundle
+
+Authenticated Admin users can create a bounded diagnostic bundle from the Admin UI or
+`POST /api/v1/support-bundles` with CSRF protection. The request accepts no path or
+artifact selection. It produces a fixed-path private tar archive and exposes only a
+secret-free receipt (archive ID, digest, artifact summary, omissions, and size).
+Private keys, secrets, headers, cookies, bodies, queries, and filesystem paths are not
+included in the API/UI result. This is not a backup replacement.
+
 ### Configuration And Administration
 
 - declarative TOML configuration
@@ -107,14 +116,26 @@ Requirements:
 - Docker
 - Docker Compose
 
-Build and start the packaged configuration:
+Official releases run a published Linux image identified by both a SemVer tag and
+its immutable manifest digest. From the extracted release package, install and
+start it with:
 
 ```bash
-docker compose up --build
+sudo ./compose/install.sh \
+  --image-tag vX.Y.Z \
+  --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX
+sudo docker compose --project-directory /etc/sponzey-edge/compose \
+  --file /etc/sponzey-edge/compose/docker-compose.yml up -d --wait
+```
+
+For local source development only, use the explicit override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml --profile local-build up --build
 ```
 
 See [`docs/install.md`](docs/install.md) and [`docs/deployment.md`](docs/deployment.md) for
-runtime paths, permissions, backup, and deployment details.
+runtime paths, permissions, backup, supported-platform boundaries, and deployment details.
 
 ### Reusable Test Container
 
@@ -205,7 +226,6 @@ SPONZEY_DATA_DIR=.sponzey \
 SPONZEY_CONFIG_FILE=examples/minimal.toml \
 SPONZEY_ADMIN_BIND=127.0.0.1:9443 \
 SPONZEY_LOG_MODE=product \
-SPONZEY_ACME_CLIENT=fake \
 cargo run -p edge-proxy
 ```
 
@@ -216,7 +236,6 @@ SPONZEY_DATA_DIR=.sponzey \
 SPONZEY_CONFIG_FILE=examples/minimal.toml \
 SPONZEY_ADMIN_BIND=127.0.0.1:9443 \
 SPONZEY_LOG_MODE=product \
-SPONZEY_ACME_CLIENT=fake \
 target/release/edge-proxy
 ```
 

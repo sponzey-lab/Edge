@@ -21,10 +21,11 @@ are supplemental evidence only: they do not replace the canonical Phase 011
 approved yet.
 
 이 문서는 Phase 001부터 Phase 011까지 완료된 구현의 현재 기준이다. 상세 과거 계획과 실행
-기록은 `.tasks/phase001/`부터 `.tasks/phase009/`에 보관하며, Phase 010 완료 판정은
+기록은 `.tasks/phase001/`부터 `.tasks/phase012/`에 보관하며, Phase 010 완료 판정은
 `artifacts/release-evidence/phase010-20260716-final-r2`와
-`docs/mvp-completion-audit.md`를 기준으로 한다. `.tasks/plan.md`의 Phase 011 정량
-memory/resource safety 계획과 Definition of Done 1~96은 완료됐다. Task 001~023은 typed policy, global logical payload
+`docs/mvp-completion-audit.md`를 기준으로 한다. Phase 011 정량 memory/resource safety의
+완료 근거는 `.tasks/phase011/`과 이 문서에 보관한다. 활성 `.tasks/plan.md`는 이후 단일 노드
+운영 제품화 계획이며 아직 완료된 기능을 주장하지 않는다. Task 001~023은 typed policy, global logical payload
 ledger, exact release, restart-required desired/active 분리, resource metrics/logs와 live
 Admin summary까지 완료했다. Task 024~038은 cross-platform harness foundation, canonical
 evidence, HTTP small-load, macOS arm64 1,024-connection capacity/admission, slow header/body timeout과
@@ -48,6 +49,15 @@ factory로 구현되었다. config snapshot, health availability, listener별 in
 outbound request/health TLS registry의 generation-atomic apply와 rollback compensation도
 구현되었다. Task 019에서 trust bundle backup/restore schema v2, schema v1 read/restore
 compatibility, trust CA/profile preflight와 fresh restore bidirectional TLS E2E도 구현되었다.
+
+현재 활성 운영 제품화 작업은 fixed-path support bundle을 추가했다. authenticated/CSRF-protected
+`POST /api/v1/support-bundles`와 Admin UI는 fixed allowlist, file/byte/log-age bounds,
+no-follow path checks와 sensitive-content scan을 거친 private tar receipt만 제공한다. API/UI는
+archive filesystem path, PEM, secret, header/cookie/body/query를 노출하지 않는다. Compose/systemd
+offline upgrade helper는 fixed image digest manifest와 checksum-backed backup receipt를 사용하며,
+실제 clean-host release evidence는 아직 완료 주장 근거가 아니다. Manual certificate/private PKI만
+지원하며 external Let’s Encrypt/ACME issuance or renewal automation is explicitly deferred until
+the user reopens that scope.
 
 Phase 011 Task 001의 macOS arm64 release mini-run 2회에서 idle과 incomplete idle connection
 100개 RSS는 9~10 MiB 범위였고 관측 증가는 1 MiB 미만이었다. 이는 owner

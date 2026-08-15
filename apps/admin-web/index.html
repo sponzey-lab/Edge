@@ -45,7 +45,7 @@
         <div id="apiError" class="notice error" hidden></div>
         <div id="resultMessage" class="notice success" hidden></div>
         <div id="restartRequiredNotice" class="notice warning" hidden>
-          Desired configuration is saved but not active. Restart the proxy to activate it.
+          Desired configuration is saved but not active. Restart the proxy to activate it, or review the Config panel and roll back to a known revision.
         </div>
 
         <section id="authPanel" class="auth-band" hidden>
@@ -69,6 +69,11 @@
         </section>
 
         <section id="dashboard" class="panel active">
+          <section class="dashboard-card" aria-labelledby="supportBundleTitle">
+            <h2 id="supportBundleTitle">Support bundle</h2>
+            <p id="supportBundleState">No bundle created in this session.</p>
+            <button id="createSupportBundleBtn" type="button">Create support bundle</button>
+          </section>
           <div class="metrics-grid" aria-label="Runtime status">
             <div class="metric">
               <span class="metric-label">Routes</span>

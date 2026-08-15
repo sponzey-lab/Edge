@@ -66,6 +66,10 @@ temp/
 *.tmp
 *.log
 
+# Python test bytecode
+__pycache__/
+*.py[cod]
+
 
 RESEARCH.md
 .tasks

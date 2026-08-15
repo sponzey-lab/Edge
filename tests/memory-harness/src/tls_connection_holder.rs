@@ -106,7 +106,7 @@ pub fn parse_tls_holder_options(args: &[String]) -> Result<TlsHolderOptions, Har
         "--ready-output",
         "--stop-file",
     ];
-    if args.len() != KEYS.len() * 2 || args.len() % 2 != 0 {
+    if args.len() != KEYS.len() * 2 || !args.len().is_multiple_of(2) {
         return Err(HarnessError::new("TLS holder arguments are incomplete"));
     }
     let mut values = BTreeMap::new();

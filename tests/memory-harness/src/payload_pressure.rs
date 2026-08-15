@@ -165,7 +165,7 @@ pub fn parse_payload_pressure_options(
         "--final-pressure",
         "--recovery-status",
     ];
-    if args.len() != KEYS.len() * 2 || args.len() % 2 != 0 {
+    if args.len() != KEYS.len() * 2 || !args.len().is_multiple_of(2) {
         return Err(HarnessError::new(
             "payload pressure arguments are incomplete",
         ));

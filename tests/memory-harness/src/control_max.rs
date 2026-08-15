@@ -689,7 +689,7 @@ fn json_array_len(value: &serde_json::Value, key: &str) -> Result<usize, Harness
 }
 
 fn parse_control_max_pairs(args: &[String]) -> Result<BTreeMap<String, String>, HarnessError> {
-    if args.len() % 2 != 0 {
+    if !args.len().is_multiple_of(2) {
         return Err(HarnessError::new("control-max options are invalid"));
     }
     let mut values = BTreeMap::new();

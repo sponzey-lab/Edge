@@ -35,7 +35,7 @@ impl SteadyLoadSpec {
             || total_requests == 0
             || workers == 0
             || workers > total_requests
-            || total_requests % workers != 0
+            || !total_requests.is_multiple_of(workers)
             || timeout.is_zero()
             || max_response_bytes == 0
         {

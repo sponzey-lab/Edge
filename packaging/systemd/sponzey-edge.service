@@ -1,0 +1,30 @@
+[Unit]
+Description=Sponzey Edge reverse proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=edge
+Group=edge
+StateDirectory=sponzey-edge
+WorkingDirectory=/var/lib/sponzey-edge
+Environment=SPONZEY_DATA_DIR=/var/lib/sponzey-edge/data
+Environment=SPONZEY_CONFIG_FILE=/etc/sponzey-edge/current.toml
+Environment=SPONZEY_ADMIN_BIND=127.0.0.1:9443
+Environment=SPONZEY_LOG_MODE=product
+ExecStart=/usr/local/bin/edge-proxy serve
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=35s
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sponzey-edge
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

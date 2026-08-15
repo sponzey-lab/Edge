@@ -119,7 +119,7 @@ pub fn parse_private_https_options(args: &[String]) -> Result<PrivateHttpsOption
         "--final-pressure",
         "--recovery-status",
     ];
-    if args.len() != KEYS.len() * 2 || args.len() % 2 != 0 {
+    if args.len() != KEYS.len() * 2 || !args.len().is_multiple_of(2) {
         return Err(HarnessError::new("private HTTPS arguments are incomplete"));
     }
     let mut values = BTreeMap::new();

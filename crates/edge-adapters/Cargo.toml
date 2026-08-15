@@ -12,6 +12,7 @@ edge-application = { path = "../edge-application" }
 edge-domain = { path = "../edge-domain" }
 edge-ports = { path = "../edge-ports" }
 fs4 = "1.1.0"
+filetime = "0.2.29"
 getrandom = "0.3.4"
 instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls", "rcgen"] }
 rustls = { version = "0.23.41", default-features = false, features = ["std", "ring"] }
@@ -19,6 +20,7 @@ rustls-pki-types = "1.15.0"
 sha2 = "0.10.9"
 serde.workspace = true
 serde_json.workspace = true
+tar = "0.4.44"
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "time", "net"] }
 x509-parser = { version = "0.18.1", default-features = false }
 

@@ -11,13 +11,39 @@ use edge_domain::{
     AuditOperationId, AuditPage, AuditQuery, AuditRecord, AuditTargetId, AuditVerificationReport,
     BackupArtifactDescriptor, BackupManifest, CertificateRef, CommandAck, ConfigRevision,
     ConfigRevisionId, ConfigSnapshot, CoreCommand, DataDirectoryLockState, ErrorCode,
-    SensitiveString, TlsServerName, TrustBundleRef, UpstreamEndpoint, UpstreamTlsPolicy,
+    OfflineUpgradeJournal, OfflineUpgradeRequest, OperationalRuntimeFacts, SensitiveString,
+    SupportBundleArchiveReceipt, SupportBundleArtifact, SupportBundleBounds, SupportBundleOmission,
+    TlsServerName, TrustBundleRef, UpstreamEndpoint, UpstreamTlsPolicy,
 };
 pub use edge_domain::{HealthAvailabilitySnapshot, HealthGeneration, UpstreamHealthKey};
 
 /// Returns the crate name for foundation smoke tests.
 pub fn crate_name() -> &'static str {
     "edge-ports"
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportBundleRequest {
+    pub artifacts: Vec<SupportBundleArtifact>,
+    pub bounds: SupportBundleBounds,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportBundleReport {
+    pub archive: SupportBundleArchiveReceipt,
+    pub collected_artifacts: Vec<SupportBundleArtifact>,
+    pub total_bytes: u64,
+    /// Present exactly when `BoundedProductLog` is collected; measured at collection time.
+    pub oldest_collected_log_age_seconds: Option<u64>,
+    pub omissions: Vec<SupportBundleOmission>,
+}
+
+/// Blocking archive/file collection belongs to adapters behind this boundary.
+pub trait SupportBundleCollector {
+    fn collect_support_bundle(
+        &mut self,
+        request: SupportBundleRequest,
+    ) -> Result<SupportBundleReport, AppError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -529,6 +555,85 @@ pub trait RuntimeResourceStatusPublisher: Send + Sync {
 
 pub trait RuntimeResourceStatusReader: Send + Sync {
     fn read_resource_status(&self) -> Result<RuntimeResourceStatusSnapshot, AppError>;
+}
+
+pub trait OperationalRuntimeStatusPublisher: Send + Sync {
+    fn publish_operational_runtime_facts(&self, facts: OperationalRuntimeFacts);
+}
+
+pub trait OperationalRuntimeStatusReader: Send + Sync {
+    fn read_operational_runtime_facts(&self) -> Result<OperationalRuntimeFacts, AppError>;
+}
+
+/// Deployment adapter boundary. Implementations may inspect package/service and
+/// filesystem permissions, but never receive a passphrase value.
+pub trait OfflineUpgradeDeployment {
+    fn admit_upgrade_artifact(&mut self, request: &OfflineUpgradeRequest) -> Result<(), AppError>;
+    fn preflight_upgrade(&mut self, request: &OfflineUpgradeRequest) -> Result<(), AppError>;
+    fn create_and_verify_upgrade_backup(
+        &mut self,
+        request: &OfflineUpgradeRequest,
+    ) -> Result<OfflineUpgradeBackupReceipt, AppError>;
+    fn stage_upgrade_artifact(&mut self, request: &OfflineUpgradeRequest) -> Result<(), AppError>;
+    fn drain_and_stop_service(&mut self) -> Result<(), AppError>;
+    fn switch_to_staged_artifact(&mut self) -> Result<(), AppError>;
+    fn start_and_wait_ready(&mut self) -> Result<(), AppError>;
+    fn rollback_upgrade(&mut self, receipt: &OfflineUpgradeBackupReceipt) -> Result<(), AppError>;
+}
+
+/// A secret-free deployment command. A concrete runner owns its fixed service
+/// identity, working paths, and executable allowlist; callers cannot supply
+/// arbitrary argv or environment values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OfflineUpgradeCommand {
+    AdmitArtifact {
+        artifact_file: String,
+        image_digest: String,
+    },
+    Preflight {
+        target_version: String,
+        image_digest: String,
+    },
+    CreateAndVerifyBackup {
+        passphrase_file: String,
+    },
+    StageArtifact {
+        image_digest: String,
+    },
+    DrainAndStop,
+    SwitchToStagedArtifact,
+    StartAndWaitReady,
+    Rollback {
+        backup_id: String,
+        previous_artifact_digest: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OfflineUpgradeCommandResult {
+    Completed,
+    BackupCreated(OfflineUpgradeBackupReceipt),
+}
+
+pub trait OfflineUpgradeCommandRunner {
+    fn run_upgrade_command(
+        &mut self,
+        command: OfflineUpgradeCommand,
+    ) -> Result<OfflineUpgradeCommandResult, AppError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfflineUpgradeBackupReceipt {
+    pub backup_id: String,
+    pub previous_artifact_digest: String,
+}
+
+pub trait OfflineUpgradeJournalStore {
+    fn persist_upgrade_journal(&mut self, journal: &OfflineUpgradeJournal) -> Result<(), AppError>;
+    fn load_upgrade_journal(
+        &mut self,
+        operation_id: &str,
+    ) -> Result<Option<OfflineUpgradeJournal>, AppError>;
 }
 
 #[derive(Debug, Clone)]

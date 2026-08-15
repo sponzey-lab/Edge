@@ -38,7 +38,7 @@ pub fn parse_release_http_options(args: &[String]) -> Result<ReleaseHttpOptions,
         "--cooldown-cycles",
         "--cooldown-interval-ms",
     ];
-    if args.len() != KEYS.len() * 2 || args.len() % 2 != 0 {
+    if args.len() != KEYS.len() * 2 || !args.len().is_multiple_of(2) {
         return Err(HarnessError::new(
             "release HTTP scenario arguments are incomplete",
         ));

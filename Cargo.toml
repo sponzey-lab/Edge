@@ -15,8 +15,8 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://example.invalid/sponzey-edge-proxy"
-rust-version = "1.80"
+repository = "https://github.com/sponzey-lab/Sponzey-Edge"
+rust-version = "1.94"
 
 [workspace.dependencies]
 serde_json = "1.0"
