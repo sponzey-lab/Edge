@@ -23,7 +23,8 @@ class ComposePackagingContractTest(unittest.TestCase):
     def test_official_compose_has_read_only_root_and_readiness_probe(self) -> None:
         self.assertIn("read_only: true", self.official)
         self.assertIn('"edge-proxy", "probe", "ready", "--admin-bind", "127.0.0.1:9443"', self.official)
-        self.assertIn("edge-data:/var/lib/sponzey-edge/data", self.official)
+        self.assertIn("edge-data:/var/lib/sponzey-edge", self.official)
+        self.assertNotIn("edge-data:/var/lib/sponzey-edge/data", self.official)
 
     def test_local_build_is_an_explicit_non_official_override(self) -> None:
         self.assertIn("build:", self.local)

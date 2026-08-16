@@ -157,7 +157,10 @@ sudo docker compose --project-directory /etc/sponzey-edge/compose \
 The service uses Linux host networking so the Admin API remains reachable only
 at host `127.0.0.1:9443`; it has a read-only root filesystem, no capabilities,
 and its healthcheck runs `edge-proxy probe ready` locally. Do not expose the
-Admin port through a Docker port mapping.
+Admin port through a Docker port mapping. Its named volume owns
+`/var/lib/sponzey-edge`: the application state stays under `data/`, while the
+exclusive data-directory lock is deliberately kept beside that directory so it
+remains writable with the image root filesystem read-only.
 
 For local source development only, use the explicit override and profile:
 

@@ -13,7 +13,9 @@ services:
       SPONZEY_ADMIN_BIND: 127.0.0.1:9443
       SPONZEY_LOG_MODE: product
     volumes:
-      - edge-data:/var/lib/sponzey-edge/data
+      # The runtime keeps its exclusive data-directory lock beside `data`.
+      # Mount the owned state root, while keeping the image root filesystem read-only.
+      - edge-data:/var/lib/sponzey-edge
     tmpfs:
       - /tmp:mode=1777,noexec,nosuid,size=16m
     healthcheck:
