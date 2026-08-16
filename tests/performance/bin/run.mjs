@@ -44,6 +44,30 @@ export function buildRunPlan(profile) {
   return { profile, ...spec, states: [RunState.Idle, RunState.Readiness, RunState.Warmup, RunState.Running, RunState.Cooldown, RunState.Validating, RunState.Published] };
 }
 
+function resultWriterUid() {
+  const uid = process.getuid?.();
+  if (!Number.isSafeInteger(uid) || uid < 0) {
+    throw new Error("host UID is unavailable for the k6 result writer");
+  }
+  return String(uid);
+}
+
+export function buildLoadGeneratorCommand({ profile, runId: id, runIndex }) {
+  const plan = buildRunPlan(profile);
+  return [
+    ...compose,
+    "run",
+    "--rm",
+    "--user",
+    resultWriterUid(),
+    "load-generator",
+    "run",
+    "--summary-export",
+    `/results/${id}.partial/${profile}-${runIndex}.json`,
+    `/scripts/${plan.script}`,
+  ];
+}
+
 function command(program, args) {
   return execFileSync(program, args, {
     cwd: root,
@@ -121,7 +145,7 @@ function runLoadGenerator(args, samples) {
         reject(error);
       }
       else if (samplingError || samples.length === 0) reject(samplingError ?? new Error("no Edge resource samples collected"));
-      else resolve();
+      else resolve({ diagnostics: `${failureEvents}--- k6 output tail ---\n${diagnostics}` });
     });
   });
 }
@@ -152,7 +176,13 @@ export async function runProfile(profile, { dryRun = false, artifactRoot = path.
     const samples = [];
     for (let index = 1; index <= plan.repetitions; index += 1) {
       try {
-        await runLoadGenerator([...compose, "run", "--rm", "load-generator", "run", "--summary-export", `/results/${id}.partial/${profile}-${index}.json`, `/scripts/${plan.script}`], samples);
+        const result = await runLoadGenerator(buildLoadGeneratorCommand({ profile, runId: id, runIndex: index }), samples);
+        const summary = path.join(tempDir, `${profile}-${index}.json`);
+        if (!existsSync(summary)) {
+          const error = new Error(`load-generator completed without writing summary: ${path.basename(summary)}`);
+          error.diagnostics = result.diagnostics;
+          throw error;
+        }
       } catch (error) {
         writeFileSync(path.join(tempDir, `${profile}-${index}.load-generator.log`), error.diagnostics ?? String(error.message), { mode: 0o600 });
         throw error;

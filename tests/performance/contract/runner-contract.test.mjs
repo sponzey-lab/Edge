@@ -24,6 +24,21 @@ test("performance runner dry-run neither starts Docker nor publishes artifacts",
   assert.equal(result.states.at(-1), "Published");
 });
 
+test("performance runner uses the host UID for the k6 result-writer command", async () => {
+  const { buildLoadGeneratorCommand } = await import(runner);
+  const command = buildLoadGeneratorCommand({
+    profile: "smoke",
+    runId: "2026-08-16T02-43-59-651Z-2457",
+    runIndex: 1,
+  });
+  const userIndex = command.indexOf("--user");
+  const serviceIndex = command.indexOf("load-generator");
+  assert.ok(userIndex >= 0);
+  assert.ok(userIndex < serviceIndex);
+  assert.equal(command[userIndex + 1], String(process.getuid()));
+  assert.ok(command.includes("/results/2026-08-16T02-43-59-651Z-2457.partial/smoke-1.json"));
+});
+
 test("fixed k6 profiles preserve the planned durations and Edge-only target", () => {
   const k6 = path.join(root, "tests/performance/k6");
   const baseline = readFileSync(path.join(k6, "baseline.js"), "utf8");
@@ -53,6 +68,7 @@ test("failed k6 runs retain bounded diagnostics in their unpublishable artifact"
   assert.match(source, /edge\\\.payload\\\.failed/);
   assert.match(common, /edge\.payload\.failed/);
   assert.match(common, /status_code/);
+  assert.match(source, /load-generator completed without writing summary/);
 });
 
 test("resource sampler normalizes Docker CPU and memory values", async () => {
