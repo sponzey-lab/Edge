@@ -63,6 +63,22 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertIn("cp packaging/systemd/preflight.sh dist/systemd/", self.workflow)
         self.assertIn("cp examples/minimal.toml dist/current.toml", self.workflow)
 
+    def test_ci_actions_use_the_node24_action_runtime(self) -> None:
+        workflow_paths = (
+            ROOT / ".github" / "workflows" / "build-binaries.yml",
+            ROOT / ".github" / "workflows" / "performance-smoke.yml",
+        )
+
+        for path in workflow_paths:
+            with self.subTest(workflow=path.name):
+                workflow = path.read_text(encoding="utf-8")
+                self.assertNotIn("actions/checkout@v4", workflow)
+                self.assertIn("actions/checkout@v5", workflow)
+
+        performance = workflow_paths[1].read_text(encoding="utf-8")
+        self.assertNotIn("actions/setup-node@v4", performance)
+        self.assertIn("actions/setup-node@v5", performance)
+
 
 if __name__ == "__main__":
     unittest.main()
