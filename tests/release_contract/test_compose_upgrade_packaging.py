@@ -21,6 +21,8 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
     def test_linux_archives_include_fixed_compose_upgrade_assets(self) -> None:
         self.assertTrue(self.helper.is_file())
         self.assertTrue(self.install.is_file())
+        self.assertTrue(os.access(self.helper, os.X_OK))
+        self.assertTrue(os.access(self.install, os.X_OK))
         self.assertIn("packaging/compose/compose-upgrade-helper", self.workflow)
         self.assertIn("packaging/compose/install.sh", self.workflow)
         self.assertIn("docker-compose.yml dist/compose/docker-compose.yml", self.workflow)
