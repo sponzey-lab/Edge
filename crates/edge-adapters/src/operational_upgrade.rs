@@ -47,7 +47,8 @@ impl UpgradeHelperProcessExecutor for SystemUpgradeHelperProcessExecutor {
         &mut self,
         invocation: UpgradeHelperInvocation,
     ) -> Result<UpgradeHelperProcessOutput, AppError> {
-        if invocation.executable != Path::new(SYSTEMD_UPGRADE_HELPER)
+        if (invocation.executable != Path::new(SYSTEMD_UPGRADE_HELPER)
+            && invocation.executable != Path::new(COMPOSE_UPGRADE_HELPER))
             || invocation
                 .arguments
                 .iter()

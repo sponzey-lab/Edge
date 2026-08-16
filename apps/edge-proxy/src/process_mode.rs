@@ -43,13 +43,21 @@ pub struct ProbeOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpgradeOptions {
     pub data_dir: PathBuf,
+    pub deployment: UpgradeDeployment,
     pub request: OfflineUpgradeRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpgradeRecoverOptions {
     pub data_dir: PathBuf,
+    pub deployment: UpgradeDeployment,
     pub operation_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpgradeDeployment {
+    Systemd,
+    Compose,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,9 +102,14 @@ pub fn parse_process_mode(args: &[String]) -> Result<ProcessMode, AppError> {
 }
 
 fn parse_upgrade_recover_mode(tokens: &[String]) -> Result<ProcessMode, AppError> {
-    let parsed = parse_options(tokens, &["--data-dir", "--operation-id"], &[])?;
+    let parsed = parse_options(
+        tokens,
+        &["--data-dir", "--deployment", "--operation-id"],
+        &[],
+    )?;
     Ok(ProcessMode::UpgradeRecover(UpgradeRecoverOptions {
         data_dir: required_path(&parsed.values, "--data-dir")?,
+        deployment: parse_upgrade_deployment(required_value(&parsed.values, "--deployment")?)?,
         operation_id: required_value(&parsed.values, "--operation-id")?.to_string(),
     }))
 }
@@ -106,6 +119,7 @@ fn parse_upgrade_mode(tokens: &[String]) -> Result<ProcessMode, AppError> {
         tokens,
         &[
             "--data-dir",
+            "--deployment",
             "--version",
             "--image-digest",
             "--artifact-file",
@@ -115,6 +129,7 @@ fn parse_upgrade_mode(tokens: &[String]) -> Result<ProcessMode, AppError> {
     )?;
     Ok(ProcessMode::Upgrade(UpgradeOptions {
         data_dir: required_path(&parsed.values, "--data-dir")?,
+        deployment: parse_upgrade_deployment(required_value(&parsed.values, "--deployment")?)?,
         request: OfflineUpgradeRequest {
             target_version: required_value(&parsed.values, "--version")?.to_string(),
             image_digest: required_value(&parsed.values, "--image-digest")?.to_string(),
@@ -122,6 +137,14 @@ fn parse_upgrade_mode(tokens: &[String]) -> Result<ProcessMode, AppError> {
             passphrase_file: required_value(&parsed.values, "--passphrase-file")?.to_string(),
         },
     }))
+}
+
+fn parse_upgrade_deployment(value: &str) -> Result<UpgradeDeployment, AppError> {
+    match value {
+        "systemd" => Ok(UpgradeDeployment::Systemd),
+        "compose" => Ok(UpgradeDeployment::Compose),
+        _ => Err(invalid_command()),
+    }
 }
 
 fn parse_probe_mode(target: &str, tokens: &[String]) -> Result<ProcessMode, AppError> {
@@ -245,7 +268,7 @@ mod tests {
     use super::{
         parse_process_mode, AuditVerifyOptions, BackupCreateOptions, BackupVerifyOptions,
         ProbeOptions, ProbeTarget, ProcessMode, RestoreOptions, RestoreRecoverOptions,
-        UpgradeOptions, UpgradeRecoverOptions,
+        UpgradeDeployment, UpgradeOptions, UpgradeRecoverOptions,
     };
     use edge_domain::{ErrorCode, OfflineUpgradeRequest};
     use std::path::PathBuf;
@@ -390,6 +413,8 @@ mod tests {
                 "upgrade",
                 "--data-dir",
                 "/var/lib/sponzey-edge/data",
+                "--deployment",
+                "systemd",
                 "--version",
                 "v1.2.3",
                 "--image-digest",
@@ -402,6 +427,7 @@ mod tests {
             .unwrap(),
             ProcessMode::Upgrade(UpgradeOptions {
                 data_dir: PathBuf::from("/var/lib/sponzey-edge/data"),
+                deployment: UpgradeDeployment::Systemd,
                 request: OfflineUpgradeRequest {
                     target_version: "v1.2.3".to_string(),
                     image_digest: "a".repeat(64),
@@ -410,6 +436,34 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn upgrade_accepts_only_explicit_compose_or_systemd_deployments() {
+        let mode = parse_process_mode(&args(&[
+            "upgrade",
+            "--data-dir",
+            "/data",
+            "--deployment",
+            "compose",
+            "--version",
+            "v1.2.3",
+            "--image-digest",
+            &"a".repeat(64),
+            "--artifact-file",
+            "/root/image.tar",
+            "--passphrase-file",
+            "/run/secrets/upgrade",
+        ]))
+        .unwrap();
+        assert_eq!(
+            match mode {
+                ProcessMode::Upgrade(value) => value.deployment,
+                _ => unreachable!(),
+            },
+            UpgradeDeployment::Compose
+        );
+        assert!(parse_process_mode(&args(&["upgrade", "--data-dir", "/data"])).is_err());
     }
 
     #[test]
@@ -456,12 +510,15 @@ mod tests {
                 "recover",
                 "--data-dir",
                 "/var/lib/sponzey-edge/data",
+                "--deployment",
+                "systemd",
                 "--operation-id",
                 "upgrade-backup-1",
             ]))
             .unwrap(),
             ProcessMode::UpgradeRecover(UpgradeRecoverOptions {
                 data_dir: PathBuf::from("/var/lib/sponzey-edge/data"),
+                deployment: UpgradeDeployment::Systemd,
                 operation_id: "upgrade-backup-1".to_string(),
             })
         );

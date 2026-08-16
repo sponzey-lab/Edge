@@ -162,6 +162,25 @@ Admin port through a Docker port mapping. Its named volume owns
 exclusive data-directory lock is deliberately kept beside that directory so it
 remains writable with the image root filesystem read-only.
 
+For a manual offline Compose upgrade, provide a root-owned image artifact and
+owner-only passphrase file. The deployment kind is required so the maintenance
+CLI cannot select a service-manager helper implicitly:
+
+```bash
+sudo edge-proxy upgrade \
+  --deployment compose \
+  --data-dir /var/lib/sponzey-edge/data \
+  --version vX.Y.Z \
+  --image-digest IMAGE_SHA256_WITHOUT_PREFIX \
+  --artifact-file /root/sponzey-edge-image.tar \
+  --passphrase-file /run/secrets/sponzey-edge-upgrade-passphrase
+```
+
+If a recorded operation requires recovery, run `edge-proxy upgrade recover`
+with the same `--deployment compose`, data directory, and operation ID. Do not
+replace these fixed values with arbitrary Docker arguments or environment
+variables.
+
 For local source development only, use the explicit override and profile:
 
 ```bash

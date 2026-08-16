@@ -16,16 +16,16 @@ use bootstrap::{
 use edge_adapters::{
     load_rustls_server_config, spawn_metric_registry_collector, spawn_metrics_listener,
     stderr_json_log_sink, stdout_json_log_sink, AgeBackupArchiveReader, AgeBackupArchiveWriter,
-    AuditLedgerOptions, CommandOfflineUpgradeDeployment, FakeAcmeClient, FileAuditLedger,
-    FileBackupArtifactSource, FileBootstrapConfigSeed, FileCertificateStore,
-    FileDataDirectoryLockManager, FileNewTargetRestorePublisher, FileOfflineUpgradeJournalStore,
-    FileReplaceRestorePublisher, FileRestoreArchiveExtractor, FileRestorePreflight,
-    FileRestoreProvenanceWriter, FileRestoreTransactionStore, FileRevisionRepository,
-    FileSecretStore, FileTrustBundleStore, LetsEncryptHttp01AcmeClient, MetricChannelPublisher,
-    PreparedHealthTlsRegistry, RandomOperationIdGenerator, RustlsClientTlsSessionFactory,
-    RustlsServerTlsSessionFactory, Sha256BackupManifestDigester, SharedFileAuditLedger,
-    SystemClock, SystemUpgradeHelperProcessExecutor, SystemdUpgradeHelperRunner,
-    TlsRuntimeSnapshot, UpgradeHelperProcessExecutor,
+    AuditLedgerOptions, CommandOfflineUpgradeDeployment, ComposeUpgradeHelperRunner,
+    FakeAcmeClient, FileAuditLedger, FileBackupArtifactSource, FileBootstrapConfigSeed,
+    FileCertificateStore, FileDataDirectoryLockManager, FileNewTargetRestorePublisher,
+    FileOfflineUpgradeJournalStore, FileReplaceRestorePublisher, FileRestoreArchiveExtractor,
+    FileRestorePreflight, FileRestoreProvenanceWriter, FileRestoreTransactionStore,
+    FileRevisionRepository, FileSecretStore, FileTrustBundleStore, LetsEncryptHttp01AcmeClient,
+    MetricChannelPublisher, PreparedHealthTlsRegistry, RandomOperationIdGenerator,
+    RustlsClientTlsSessionFactory, RustlsServerTlsSessionFactory, Sha256BackupManifestDigester,
+    SharedFileAuditLedger, SystemClock, SystemUpgradeHelperProcessExecutor,
+    SystemdUpgradeHelperRunner, TlsRuntimeSnapshot, UpgradeHelperProcessExecutor,
 };
 #[cfg(test)]
 use edge_application::parse_mvp_config;
@@ -126,10 +126,27 @@ fn run_upgrade_with_executor<E: UpgradeHelperProcessExecutor>(
     options: process_mode::UpgradeOptions,
     executor: E,
 ) -> Result<edge_application::OfflineUpgradeExecutionReceipt, AppError> {
-    let runner = SystemdUpgradeHelperRunner::new(executor);
-    let mut deployment = CommandOfflineUpgradeDeployment::new(runner);
     let mut journals = FileOfflineUpgradeJournalStore::new(&options.data_dir)?;
-    execute_journaled_offline_upgrade_with_receipt(&mut deployment, &mut journals, options.request)
+    match options.deployment {
+        process_mode::UpgradeDeployment::Systemd => {
+            let mut deployment =
+                CommandOfflineUpgradeDeployment::new(SystemdUpgradeHelperRunner::new(executor));
+            execute_journaled_offline_upgrade_with_receipt(
+                &mut deployment,
+                &mut journals,
+                options.request,
+            )
+        }
+        process_mode::UpgradeDeployment::Compose => {
+            let mut deployment =
+                CommandOfflineUpgradeDeployment::new(ComposeUpgradeHelperRunner::new(executor));
+            execute_journaled_offline_upgrade_with_receipt(
+                &mut deployment,
+                &mut journals,
+                options.request,
+            )
+        }
+    }
 }
 
 fn run_upgrade_recover(options: process_mode::UpgradeRecoverOptions) -> std::io::Result<()> {
@@ -144,10 +161,19 @@ fn run_upgrade_recover_with_executor<E: UpgradeHelperProcessExecutor>(
     options: process_mode::UpgradeRecoverOptions,
     executor: E,
 ) -> Result<edge_domain::OfflineUpgradeState, AppError> {
-    let runner = SystemdUpgradeHelperRunner::new(executor);
-    let mut deployment = CommandOfflineUpgradeDeployment::new(runner);
     let mut journals = FileOfflineUpgradeJournalStore::new(&options.data_dir)?;
-    recover_offline_upgrade(&mut deployment, &mut journals, &options.operation_id)
+    match options.deployment {
+        process_mode::UpgradeDeployment::Systemd => {
+            let mut deployment =
+                CommandOfflineUpgradeDeployment::new(SystemdUpgradeHelperRunner::new(executor));
+            recover_offline_upgrade(&mut deployment, &mut journals, &options.operation_id)
+        }
+        process_mode::UpgradeDeployment::Compose => {
+            let mut deployment =
+                CommandOfflineUpgradeDeployment::new(ComposeUpgradeHelperRunner::new(executor));
+            recover_offline_upgrade(&mut deployment, &mut journals, &options.operation_id)
+        }
+    }
 }
 
 fn render_upgrade_result(operation_id: &str, state: edge_domain::OfflineUpgradeState) -> String {
@@ -1867,6 +1893,7 @@ mod tests {
     fn upgrade_options(root: std::path::PathBuf) -> process_mode::UpgradeOptions {
         process_mode::UpgradeOptions {
             data_dir: root,
+            deployment: process_mode::UpgradeDeployment::Systemd,
             request: edge_domain::OfflineUpgradeRequest {
                 target_version: "v1.2.3".to_string(),
                 image_digest: "b".repeat(64),
@@ -1925,6 +1952,7 @@ mod tests {
         let state = run_upgrade_recover_with_executor(
             process_mode::UpgradeRecoverOptions {
                 data_dir: root.clone(),
+                deployment: process_mode::UpgradeDeployment::Systemd,
                 operation_id: "upgrade-backup-1".to_string(),
             },
             FakeUpgradeHelper::default(),
