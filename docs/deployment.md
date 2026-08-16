@@ -344,8 +344,9 @@ manual evidence rather than deleted script wrappers:
 - product logs exclude secrets and request/response bodies
 - two-upstream round-robin, health exclusion, all-unhealthy `503`, and
   authenticated operational status evidence pass
-- the Post-MVP Let's Encrypt staging checklist in `docs/acme-staging.md` is used
-  only when that deferred feature resumes with an approved public test domain
+- external certificate automation is deferred; manual certificates and private
+  PKI remain the supported operational paths until that scope is explicitly
+  reopened
 
 Before release, run `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo test --workspace -- --test-threads=1`, then record the required runtime, Admin API,

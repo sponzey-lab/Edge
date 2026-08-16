@@ -15,8 +15,8 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
         self.assertIn("manual certificates and private PKI only", install)
         self.assertIn("POST /api/v1/support-bundles", deployment)
         self.assertIn("clean-host release evidence", current_state)
-        self.assertIn("must not be run as part of this productization", release_gate)
-        self.assertIn("plan. Actual Linux Compose/systemd clean-host evidence", release_gate)
+        self.assertIn("Manual certificates and private PKI are the only supported certificate paths", release_gate)
+        self.assertIn("clean-host", release_gate)
 
     def test_readmes_describe_the_fixed_secret_free_support_bundle_contract(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -46,6 +46,14 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
         self.assertNotIn("scripts/init_acme_staging", template)
         self.assertNotIn("scripts/check_mvp_release_ready.sh", template)
         self.assertNotIn("scripts/check_acme_staging_evidence.sh", template)
+
+    def test_release_gate_has_no_current_or_archived_acme_runbook_command(self) -> None:
+        release_gate = (ROOT / "docs" / "release-gate.md").read_text(encoding="utf-8")
+
+        self.assertNotIn("SPONZEY_ACME_CLIENT=", release_gate)
+        self.assertNotIn("scripts/init_acme_staging", release_gate)
+        self.assertNotIn("scripts/check_acme_staging", release_gate)
+        self.assertNotIn("scripts/check_mvp_release_ready.sh", release_gate)
 
 
 if __name__ == "__main__":
