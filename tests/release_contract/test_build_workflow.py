@@ -17,6 +17,11 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertNotIn("rustup default stable", self.workflow)
         self.assertIn("cargo build --release --locked -p edge-proxy", self.workflow)
 
+    def test_reusable_test_container_uses_the_exact_workspace_toolchain(self) -> None:
+        dockerfile = (ROOT / "Dockerfile.test").read_text(encoding="utf-8")
+        self.assertIn("FROM rust:1.94.0-bookworm", dockerfile)
+        self.assertNotIn("FROM rust:1.94-bookworm", dockerfile)
+
     def test_validates_release_identity_only_for_semver_tags(self) -> None:
         self.assertIn("Validate release metadata", self.workflow)
         self.assertIn("startsWith(github.ref, 'refs/tags/v')", self.workflow)
