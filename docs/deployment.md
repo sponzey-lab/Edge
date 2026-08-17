@@ -163,8 +163,10 @@ exclusive data-directory lock is deliberately kept beside that directory so it
 remains writable with the image root filesystem read-only.
 
 For a manual offline Compose upgrade, provide a root-owned image artifact and
-owner-only passphrase file. The deployment kind is required so the maintenance
-CLI cannot select a service-manager helper implicitly:
+an owner-only root-owned passphrase file. The fixed upgrade-only Compose
+override runs its short-lived backup/verify command as root solely to read that
+mount; normal serving remains non-root. The deployment kind is required so the
+maintenance CLI cannot select a service-manager helper implicitly:
 
 ```bash
 sudo edge-proxy upgrade \

@@ -34,7 +34,14 @@ impl<'a, D: OfflineUpgradeDeployment> PrepareOfflineUpgradeUseCase<'a, D> {
         request.validate()?;
         self.deployment.admit_upgrade_artifact(&request)?;
         self.deployment.preflight_upgrade(&request)?;
-        let backup = self.deployment.create_and_verify_upgrade_backup(&request)?;
+        self.deployment.drain_and_stop_service()?;
+        let backup = match self.deployment.create_and_verify_upgrade_backup(&request) {
+            Ok(backup) => backup,
+            Err(error) => {
+                self.deployment.start_and_wait_ready()?;
+                return Err(error);
+            }
+        };
         Ok(OfflineUpgradePrepared {
             target_version: request.target_version,
             target_image_digest: request.image_digest,
@@ -117,10 +124,6 @@ impl<'a, D: OfflineUpgradeDeployment> ExecuteOfflineUpgradeUseCase<'a, D> {
             PrepareOfflineUpgradeUseCase::new(self.deployment).execute(request.clone())?;
         self.deployment.stage_upgrade_artifact(&request)?;
         let mut state = OfflineUpgradeState::Prepared.transition(OfflineUpgradeState::Draining)?;
-        if let Err(error) = self.deployment.drain_and_stop_service() {
-            self.deployment.rollback_upgrade(&prepared.backup)?;
-            return Err(error);
-        }
         state = state.transition(OfflineUpgradeState::Stopped)?;
         if let Err(error) = self.deployment.switch_to_staged_artifact() {
             self.deployment.rollback_upgrade(&prepared.backup)?;
@@ -171,15 +174,6 @@ pub fn execute_journaled_offline_upgrade_with_receipt<
         &prepared.backup,
         &request.image_digest,
     )?;
-    if let Err(error) = deployment.drain_and_stop_service() {
-        return Err(rollback_journaled_upgrade(
-            deployment,
-            journals,
-            &prepared.backup,
-            &request.image_digest,
-            error,
-        ));
-    }
     persist_upgrade_journal(
         journals,
         OfflineUpgradeState::Stopped,
@@ -269,6 +263,7 @@ mod tests {
     struct Fake {
         calls: Vec<&'static str>,
         fail_drain: bool,
+        fail_backup: bool,
         fail_switch: bool,
         fail_start: bool,
         fail_rollback: bool,
@@ -360,6 +355,12 @@ mod tests {
             _: &OfflineUpgradeRequest,
         ) -> Result<OfflineUpgradeBackupReceipt, AppError> {
             self.calls.push("backup");
+            if self.fail_backup {
+                return Err(AppError::new(
+                    ErrorCode::BackupStateTransitionInvalid,
+                    "backup failed",
+                ));
+            }
             Ok(OfflineUpgradeBackupReceipt {
                 backup_id: "backup-1".into(),
                 previous_artifact_digest: "b".repeat(64),
@@ -375,12 +376,15 @@ mod tests {
         }
     }
     #[test]
-    fn preflight_and_verified_backup_run_before_any_switch() {
+    fn preparation_stops_the_runtime_before_taking_the_exclusive_lock_backup() {
         let mut deployment = Fake::default();
         let output = PrepareOfflineUpgradeUseCase::new(&mut deployment)
             .execute(request())
             .unwrap();
-        assert_eq!(deployment.calls, ["admit", "preflight", "backup"]);
+        assert_eq!(
+            deployment.calls,
+            ["admit", "preflight", "drain-stop", "backup"]
+        );
         assert_eq!(output.backup.backup_id, "backup-1");
     }
     #[test]
@@ -427,9 +431,9 @@ mod tests {
             [
                 "admit",
                 "preflight",
+                "drain-stop",
                 "backup",
                 "stage",
-                "drain-stop",
                 "switch",
                 "start-ready"
             ]
@@ -451,9 +455,9 @@ mod tests {
             [
                 "admit",
                 "preflight",
+                "drain-stop",
                 "backup",
                 "stage",
-                "drain-stop",
                 "switch",
                 "rollback"
             ]
@@ -534,9 +538,9 @@ mod tests {
             [
                 "admit",
                 "preflight",
+                "drain-stop",
                 "backup",
                 "stage",
-                "drain-stop",
                 "switch",
                 "start-ready"
             ]
@@ -553,7 +557,10 @@ mod tests {
         assert!(
             execute_journaled_offline_upgrade(&mut deployment, &mut journal, request()).is_err()
         );
-        assert_eq!(deployment.calls, ["admit", "preflight", "backup"]);
+        assert_eq!(
+            deployment.calls,
+            ["admit", "preflight", "drain-stop", "backup"]
+        );
     }
 
     #[test]
@@ -574,9 +581,9 @@ mod tests {
             [
                 "admit",
                 "preflight",
+                "drain-stop",
                 "backup",
                 "stage",
-                "drain-stop",
                 "switch",
                 "rollback"
             ]
@@ -594,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn journaled_drain_failure_rolls_back_and_persists_terminal_receipt() {
+    fn journaled_drain_failure_prevents_backup_and_journal_creation() {
         let mut deployment = Fake {
             fail_drain: true,
             ..Default::default()
@@ -603,16 +610,25 @@ mod tests {
         assert!(
             execute_journaled_offline_upgrade(&mut deployment, &mut journal, request()).is_err()
         );
-        assert_eq!(deployment.calls.last(), Some(&"rollback"));
-        assert_eq!(
-            journal.states,
-            [
-                OfflineUpgradeState::Prepared,
-                OfflineUpgradeState::Draining,
-                OfflineUpgradeState::RollingBack,
-                OfflineUpgradeState::RolledBack
-            ]
+        assert_eq!(deployment.calls, ["admit", "preflight", "drain-stop"]);
+        assert!(journal.states.is_empty());
+    }
+
+    #[test]
+    fn backup_failure_restarts_the_unchanged_runtime_before_returning() {
+        let mut deployment = Fake {
+            fail_backup: true,
+            ..Default::default()
+        };
+        let mut journal = Journal::default();
+        assert!(
+            execute_journaled_offline_upgrade(&mut deployment, &mut journal, request()).is_err()
         );
+        assert_eq!(
+            deployment.calls,
+            ["admit", "preflight", "drain-stop", "backup", "start-ready"]
+        );
+        assert!(journal.states.is_empty());
     }
 
     #[test]
@@ -674,7 +690,10 @@ mod tests {
         assert!(
             execute_journaled_offline_upgrade(&mut deployment, &mut journal, request()).is_err()
         );
-        assert_eq!(deployment.calls, ["admit", "preflight", "backup", "stage"]);
+        assert_eq!(
+            deployment.calls,
+            ["admit", "preflight", "drain-stop", "backup", "stage"]
+        );
     }
 
     #[test]
@@ -692,9 +711,9 @@ mod tests {
             [
                 "admit",
                 "preflight",
+                "drain-stop",
                 "backup",
                 "stage",
-                "drain-stop",
                 "switch"
             ]
         );

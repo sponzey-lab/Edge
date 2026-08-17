@@ -1,5 +1,8 @@
 services:
   edge:
+    # The normal service remains non-root. This short-lived backup operation
+    # reads the root-owned, owner-only passphrase through the fixed bind mount.
+    user: "0:0"
     volumes:
       - type: bind
         source: /run/secrets/sponzey-edge-upgrade-passphrase
