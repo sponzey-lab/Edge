@@ -80,7 +80,9 @@ case "$command" in
     ;;
   start-ready)
     [ "$#" -eq 0 ] || fail "start-ready takes no arguments"
-    run_compose up --no-build --no-recreate --pull never --detach edge
+    # The staged runtime manifest may select a different immutable image.  Let
+    # Compose recreate the stopped service when its image configuration changes.
+    run_compose up --no-build --pull never --detach edge
     run_compose exec -T edge edge-proxy probe ready --admin-bind 127.0.0.1:9443
     ;;
   admit-artifact)

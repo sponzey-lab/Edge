@@ -169,7 +169,7 @@ mount; normal serving remains non-root. The deployment kind is required so the
 maintenance CLI cannot select a service-manager helper implicitly:
 
 ```bash
-sudo edge-proxy upgrade \
+sudo ./edge-proxy upgrade \
   --deployment compose \
   --data-dir /var/lib/sponzey-edge/data \
   --version vX.Y.Z \
@@ -178,7 +178,10 @@ sudo edge-proxy upgrade \
   --passphrase-file /run/secrets/sponzey-edge-upgrade-passphrase
 ```
 
-If a recorded operation requires recovery, run `edge-proxy upgrade recover`
+`compose/install.sh` installs the service and its fixed helper, not the host
+maintenance CLI. Keep the verified release archive available and invoke its
+top-level `./edge-proxy` binary as above. If a recorded operation requires
+recovery, run `./edge-proxy upgrade recover`
 with the same `--deployment compose`, data directory, and operation ID. Do not
 replace these fixed values with arbitrary Docker arguments or environment
 variables.

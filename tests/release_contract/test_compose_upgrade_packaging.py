@@ -174,7 +174,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                 capture.read_text(encoding="utf-8").splitlines(),
                 [
                     f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {self.helper} stop --timeout 30 edge ",
-                    f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {self.helper} up --no-build --no-recreate --pull never --detach edge ",
+                    f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {self.helper} up --no-build --pull never --detach edge ",
                     f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {self.helper} exec -T edge edge-proxy probe ready --admin-bind 127.0.0.1:9443 ",
                 ],
             )
