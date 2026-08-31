@@ -16,6 +16,8 @@ services:
       # The runtime keeps its exclusive data-directory lock beside `data`.
       # Mount the owned state root, while keeping the image root filesystem read-only.
       - edge-data:/var/lib/sponzey-edge
+      # The host primary config is bootstrap-only and must never be writable by the container.
+      - /etc/sponzey-edge/current.toml:/etc/sponzey-edge/current.toml:ro
     tmpfs:
       - /tmp:mode=1777,noexec,nosuid,size=16m
     healthcheck:

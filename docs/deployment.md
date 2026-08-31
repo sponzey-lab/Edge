@@ -162,6 +162,13 @@ Admin port through a Docker port mapping. Its named volume owns
 exclusive data-directory lock is deliberately kept beside that directory so it
 remains writable with the image root filesystem read-only.
 
+On first install, `compose/install.sh` installs the archive's default primary
+config at `/etc/sponzey-edge/current.toml`. Later installs preserve that file.
+Official Compose mounts exactly this canonical host file read-only into the
+container; choose an available listener bind in it before the first `up`, and
+use the validated config lifecycle rather than editing it during a running
+process.
+
 For a manual offline Compose upgrade, provide a root-owned image artifact and
 an owner-only root-owned passphrase file. The fixed upgrade-only Compose
 override runs its short-lived backup/verify command as root solely to read that

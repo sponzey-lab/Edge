@@ -26,6 +26,12 @@ class ComposePackagingContractTest(unittest.TestCase):
         self.assertIn("edge-data:/var/lib/sponzey-edge", self.official)
         self.assertNotIn("edge-data:/var/lib/sponzey-edge/data", self.official)
 
+    def test_official_compose_mounts_the_canonical_primary_config_read_only(self) -> None:
+        self.assertIn(
+            "/etc/sponzey-edge/current.toml:/etc/sponzey-edge/current.toml:ro",
+            self.official,
+        )
+
     def test_local_build_is_an_explicit_non_official_override(self) -> None:
         self.assertIn("build:", self.local)
         self.assertIn("profiles: [\"local-build\"]", self.local)

@@ -85,6 +85,12 @@ The image packages:
 - `/etc/sponzey-edge/current.toml`
 - `/usr/share/sponzey-edge/admin-web`
 
+For official Compose, `compose/install.sh` copies the packaged default primary
+config to `/etc/sponzey-edge/current.toml` only when that canonical host file
+does not already exist. The official service mounts it read-only, so select an
+available listener bind before first start and use the config validation/apply
+lifecycle for later changes.
+
 The production Compose file and reusable test container are separate contracts. For development,
 start `docker-compose.test.yml` and run checks through its long-lived `edge-test` service; do not
 mount production data or secrets into it. See `docs/testing.md` for the exact commands.

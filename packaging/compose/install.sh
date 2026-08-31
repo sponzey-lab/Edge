@@ -9,10 +9,13 @@ digest=${4#sha256:}
 case "$digest" in *[!0123456789abcdef]*|'') echo "invalid image digest" >&2; exit 2 ;; esac
 
 package_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+release_root=$(dirname "$package_dir")
+config_target=/etc/sponzey-edge/current.toml
 install -d -o root -g root -m 0755 /etc/sponzey-edge/compose
 install -d -o root -g root -m 0755 /usr/local/libexec/sponzey-edge
 install -o root -g root -m 0644 "$package_dir/docker-compose.yml" /etc/sponzey-edge/compose/docker-compose.yml
 install -o root -g root -m 0644 "$package_dir/docker-compose.upgrade.yml" /etc/sponzey-edge/compose/docker-compose.upgrade.yml
+[ -e "$config_target" ] || install -o root -g root -m 0644 "$release_root/current.toml" "$config_target"
 umask 077
 printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\n' "$2" "$digest" > /etc/sponzey-edge/compose/runtime.env.tmp
 chmod 0644 /etc/sponzey-edge/compose/runtime.env.tmp

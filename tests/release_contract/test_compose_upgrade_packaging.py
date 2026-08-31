@@ -34,6 +34,13 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         self.assertIn('--env-file "$RUNTIME_ENV_FILE"', helper)
         self.assertIn("runtime.env", installer)
 
+    def test_first_compose_install_preserves_an_existing_canonical_primary_config(self) -> None:
+        installer = self.install.read_text(encoding="utf-8")
+        self.assertIn("config_target=/etc/sponzey-edge/current.toml", installer)
+        self.assertIn('release_root=$(dirname "$package_dir")', installer)
+        self.assertIn('[ -e "$config_target" ] || install -o root -g root -m 0644', installer)
+        self.assertIn('"$release_root/current.toml" "$config_target"', installer)
+
     def test_upgrade_override_runs_only_the_backup_operation_as_root_for_owner_only_secret_access(self) -> None:
         upgrade_override = (self.directory / "docker-compose.upgrade.yml").read_text(encoding="utf-8")
         self.assertIn('user: "0:0"', upgrade_override)
