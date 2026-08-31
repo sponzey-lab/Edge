@@ -1,6 +1,6 @@
 # Current Implementation State
 
-기준일: 2026-08-30
+기준일: 2026-08-31
 
 `scripts/` 아래의 로컬 테스트 helper, smoke runner, release evidence collector, memory
 profile wrapper는 삭제되었다. 이 문서에 남아 있는 해당 script 이름은 과거 Phase evidence를
@@ -20,10 +20,12 @@ The public `v0.0.4` prerelease remains immutable but is rejected from promotion:
 manifest lacks the required OCI revision and version labels. It must not be retagged, amended,
 or used as clean-host evidence. The public `v0.0.5` prerelease has a valid identity and C8
 evidence, but its official Compose package has no primary-config mount and therefore cannot
-complete the clean-host deployment matrix. The current tree carries `v0.0.6 candidate metadata`,
-but has no tag or published artifact. It adds the missing read-only canonical primary-config
-mount and first-install preservation behavior; its source-level contracts do not replace the
-required same-identity clean-host matrix.
+complete the clean-host deployment matrix. The public `v0.0.6` prerelease adds the missing
+read-only canonical primary-config mount and first-install preservation behavior, but its
+operator documentation omits the required fixed `runtime.env` Compose input. The current tree
+carries `v0.0.7 candidate metadata`, but has no tag or published artifact. It corrects that
+operator command and pins it with a release-contract regression; its source-level contracts do
+not replace the required same-identity clean-host matrix.
 Before a candidate prerelease is assembled, the tag workflow anonymously pulls its exact GHCR
 digest and fails closed unless the inspected OCI revision and version labels equal the tagged
 commit and SemVer tag.

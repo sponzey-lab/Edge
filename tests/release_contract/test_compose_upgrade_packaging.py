@@ -34,6 +34,15 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         self.assertIn('--env-file "$RUNTIME_ENV_FILE"', helper)
         self.assertIn("runtime.env", installer)
 
+    def test_official_compose_documentation_uses_the_fixed_runtime_image_manifest(self) -> None:
+        for document in ("README.md", "docs/deployment.md", "docs/install.md"):
+            source = (ROOT / document).read_text(encoding="utf-8")
+            self.assertIn(
+                "--env-file /etc/sponzey-edge/compose/runtime.env",
+                source,
+                document,
+            )
+
     def test_first_compose_install_preserves_an_existing_canonical_primary_config(self) -> None:
         installer = self.install.read_text(encoding="utf-8")
         self.assertIn("config_target=/etc/sponzey-edge/current.toml", installer)

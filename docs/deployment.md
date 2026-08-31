@@ -151,6 +151,7 @@ sudo ./compose/install.sh \
   --image-tag vX.Y.Z \
   --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX
 sudo docker compose --project-directory /etc/sponzey-edge/compose \
+  --env-file /etc/sponzey-edge/compose/runtime.env \
   --file /etc/sponzey-edge/compose/docker-compose.yml up -d --wait
 ```
 
