@@ -185,7 +185,10 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ghcr.io/sponzey-lab/sponzey-edge:${{ github.ref_name }}
-          labels: org.opencontainers.image.source=https://github.com/sponzey-lab/Sponzey-Edge
+          labels: |
+            org.opencontainers.image.source=https://github.com/sponzey-lab/Sponzey-Edge
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
 
       - name: Verify published GHCR image is publicly pullable
         if: steps.release_tag.outputs.publish == 'true'

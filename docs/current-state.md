@@ -16,9 +16,11 @@ workspace test, architecture/source-index fitness와 pinned `cargo-audit`의 `ca
 tracked clean-host evidence validates through `promote-release.yml`; this does not reopen certificate
 automation.
 
-The current tree carries `v0.0.4 candidate metadata`, but has no tag or published artifact. Its
-source-level upgrade/rollback contracts are candidate preparation only and do not replace the
-required same-identity clean-host matrix.
+The public `v0.0.4` prerelease remains immutable but is rejected from promotion: its image
+manifest lacks the required OCI revision and version labels. It must not be retagged, amended,
+or used as clean-host evidence. The current tree carries `v0.0.5 candidate metadata`, but has
+no tag or published artifact. Its source-level upgrade/rollback contracts are candidate
+preparation only and do not replace the required same-identity clean-host matrix.
 
 ## Performance Test Environment
 

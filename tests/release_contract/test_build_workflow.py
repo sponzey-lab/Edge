@@ -67,6 +67,16 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertIn("tools/release/assemble_release_artifacts.py", self.workflow)
         self.assertIn("tools/release/validate_release_manifest.py", self.workflow)
 
+    def test_tag_release_binds_oci_revision_and_version_labels(self) -> None:
+        self.assertIn(
+            "org.opencontainers.image.revision=${{ github.sha }}",
+            self.workflow,
+        )
+        self.assertIn(
+            "org.opencontainers.image.version=${{ github.ref_name }}",
+            self.workflow,
+        )
+
     def test_tag_release_proves_the_digest_is_pullable_without_registry_credentials(self) -> None:
         self.assertIn("Verify published GHCR image is publicly pullable", self.workflow)
         self.assertIn("docker logout ghcr.io || true", self.workflow)
