@@ -68,7 +68,7 @@ services:
       performance-net:
         ipv4_address: 172.30.0.3
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${SPONZEY_PERFORMANCE_DASHBOARD_PORT:-3000}:3000"
     volumes:
       - ./tests/performance/node-upstream:/app:ro
       - ./artifacts/performance/edge-perf-runtime/client-ca.pem:/test-pki/client-ca.pem:ro

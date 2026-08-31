@@ -17,6 +17,28 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertNotIn("rustup default stable", self.workflow)
         self.assertIn("cargo build --release --locked -p edge-proxy", self.workflow)
 
+    def test_source_quality_job_blocks_build_and_release(self) -> None:
+        self.assertIn("quality:\n    name: Source quality", self.workflow)
+        for command in (
+            "cargo fmt --check",
+            "cargo clippy --workspace --all-targets -- -D warnings",
+            "cargo test --workspace -- --test-threads=1",
+            "cargo run -p edge-core --example http_framing_mutation_fuzz -- 1000",
+            "python3 tools/release/check_architecture.py --workspace .",
+            "cargo install cargo-audit --version 0.22.2 --locked",
+            "cargo audit",
+        ):
+            self.assertIn(command, self.workflow)
+        self.assertIn("  build:\n    needs: quality", self.workflow)
+        self.assertIn("    needs: [quality, build]", self.workflow)
+        self.assertLess(self.workflow.index("  quality:"), self.workflow.index("  build:"))
+
+    def test_release_docs_describe_the_blocking_quality_gate(self) -> None:
+        for relative_path in ("docs/current-state.md", "docs/release-gate.md"):
+            contents = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn("Source quality", contents, relative_path)
+            self.assertIn("cargo audit", contents, relative_path)
+
     def test_reusable_test_container_uses_the_exact_workspace_toolchain(self) -> None:
         dockerfile = (ROOT / "Dockerfile.test").read_text(encoding="utf-8")
         self.assertIn("FROM rust:1.94.0-bookworm", dockerfile)

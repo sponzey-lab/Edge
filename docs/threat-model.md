@@ -66,6 +66,10 @@ This is the initial MVP threat model. It is intentionally short and must be expa
 ## MVP Mitigations
 
 - reject ambiguous Transfer-Encoding and Content-Length requests
+- strip `Connection`, `Keep-Alive`, legacy `Proxy-Connection`, and
+  `Connection`-nominated hop-by-hop fields from normal proxy requests and
+  non-WebSocket upstream responses; retain chunked `Transfer-Encoding` only
+  while forwarding its validated framing bytes
 - set request header/body/time limits
 - bind admin interface to localhost or unix socket by default
 - require config validation, plan, apply, and rollback flow

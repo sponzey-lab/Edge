@@ -2,13 +2,10 @@ use std::collections::BTreeMap;
 
 use edge_domain::{
     transition_upstream_health, AppError, ConfigRevisionId, ConfigSnapshot, ErrorCode,
-    HealthCheckPolicy, HealthObservation, HealthStateChange, HttpHealthCheckPolicy, ServiceId,
+    HealthCheckPolicy, HealthObservation, HealthStateChange, HttpHealthCheckPolicy,
     UpstreamAvailability, UpstreamEndpoint, UpstreamHealthState, UpstreamTlsPolicy,
 };
-use edge_ports::{
-    HealthAvailabilitySnapshot, HealthProbeCompletion, HealthProbeDispatcher, HealthProbeOutcome,
-    HealthProbeSubmit, LogSink, MetricDescriptor, MetricEvent, MetricsSink, StructuredLogEvent,
-};
+use edge_ports::HealthAvailabilitySnapshot;
 pub use edge_ports::{HealthGeneration, HealthProbeId, HealthProbeRequest, UpstreamHealthKey};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,400 +79,10 @@ pub enum HandleProbeDispatchRejection {
     Ignored(ProbeResultIgnored),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HealthTransitionEvent {
-    revision_id: ConfigRevisionId,
-    generation: HealthGeneration,
-    key: UpstreamHealthKey,
-    change: HealthStateChange,
-}
-
-impl HealthTransitionEvent {
-    pub fn new(
-        revision_id: ConfigRevisionId,
-        generation: HealthGeneration,
-        key: UpstreamHealthKey,
-        change: HealthStateChange,
-    ) -> Option<Self> {
-        (change.from != change.to).then_some(Self {
-            revision_id,
-            generation,
-            key,
-            change,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthDispatchDropReason {
     QueueFull,
     WorkerStopped,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum HealthProbeDebugReason {
-    Succeeded,
-    ConnectTimeout,
-    ConnectError,
-    WriteError,
-    MalformedResponse,
-    StatusMismatch,
-    ReadTimeout,
-    ResponseTooLarge,
-    TlsProfile,
-    TlsHandshake,
-    TlsHandshakeTimeout,
-    Cancelled,
-    Internal,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HealthProbeDebugEvent {
-    revision_id: ConfigRevisionId,
-    generation: HealthGeneration,
-    key: UpstreamHealthKey,
-    reason: HealthProbeDebugReason,
-    status_code: Option<u16>,
-    duration_ms: u64,
-}
-
-impl HealthProbeDebugEvent {
-    pub fn succeeded(
-        revision_id: ConfigRevisionId,
-        generation: HealthGeneration,
-        key: UpstreamHealthKey,
-        status_code: u16,
-        duration_ms: u64,
-    ) -> Self {
-        Self {
-            revision_id,
-            generation,
-            key,
-            reason: HealthProbeDebugReason::Succeeded,
-            status_code: Some(status_code),
-            duration_ms,
-        }
-    }
-
-    pub fn failed(
-        revision_id: ConfigRevisionId,
-        generation: HealthGeneration,
-        key: UpstreamHealthKey,
-        failure: edge_ports::HealthProbeFailure,
-        duration_ms: u64,
-    ) -> Self {
-        let (reason, status_code) = match failure {
-            edge_ports::HealthProbeFailure::ConnectTimeout => {
-                (HealthProbeDebugReason::ConnectTimeout, None)
-            }
-            edge_ports::HealthProbeFailure::ConnectError => {
-                (HealthProbeDebugReason::ConnectError, None)
-            }
-            edge_ports::HealthProbeFailure::WriteError => {
-                (HealthProbeDebugReason::WriteError, None)
-            }
-            edge_ports::HealthProbeFailure::MalformedResponse => {
-                (HealthProbeDebugReason::MalformedResponse, None)
-            }
-            edge_ports::HealthProbeFailure::StatusMismatch { status_code } => {
-                (HealthProbeDebugReason::StatusMismatch, Some(status_code))
-            }
-            edge_ports::HealthProbeFailure::ReadTimeout => {
-                (HealthProbeDebugReason::ReadTimeout, None)
-            }
-            edge_ports::HealthProbeFailure::ResponseTooLarge => {
-                (HealthProbeDebugReason::ResponseTooLarge, None)
-            }
-            edge_ports::HealthProbeFailure::TlsProfile => {
-                (HealthProbeDebugReason::TlsProfile, None)
-            }
-            edge_ports::HealthProbeFailure::TlsHandshake => {
-                (HealthProbeDebugReason::TlsHandshake, None)
-            }
-            edge_ports::HealthProbeFailure::TlsHandshakeTimeout => {
-                (HealthProbeDebugReason::TlsHandshakeTimeout, None)
-            }
-            edge_ports::HealthProbeFailure::Cancelled => (HealthProbeDebugReason::Cancelled, None),
-            edge_ports::HealthProbeFailure::Internal => (HealthProbeDebugReason::Internal, None),
-        };
-        Self {
-            revision_id,
-            generation,
-            key,
-            reason,
-            status_code,
-            duration_ms,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FieldDebugHealthSampler {
-    capacity: usize,
-    last_emitted_ms: BTreeMap<(UpstreamHealthKey, HealthProbeDebugReason), u64>,
-}
-
-impl FieldDebugHealthSampler {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            capacity,
-            last_emitted_ms: BTreeMap::new(),
-        }
-    }
-
-    pub fn should_emit(&mut self, event: &HealthProbeDebugEvent, now_ms: u64) -> bool {
-        if self.capacity == 0 {
-            return false;
-        }
-        let key = (event.key.clone(), event.reason);
-        if self
-            .last_emitted_ms
-            .get(&key)
-            .is_some_and(|previous| now_ms.saturating_sub(*previous) < 60_000)
-        {
-            return false;
-        }
-        if !self.last_emitted_ms.contains_key(&key) && self.last_emitted_ms.len() >= self.capacity {
-            let oldest = self
-                .last_emitted_ms
-                .iter()
-                .min_by_key(|(entry, timestamp)| (*timestamp, *entry))
-                .map(|(entry, _)| entry.clone());
-            if let Some(oldest) = oldest {
-                self.last_emitted_ms.remove(&oldest);
-            }
-        }
-        self.last_emitted_ms.insert(key, now_ms);
-        true
-    }
-
-    pub fn len(&self) -> usize {
-        self.last_emitted_ms.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.last_emitted_ms.is_empty()
-    }
-}
-
-pub fn structured_health_probe_debug_log(event: &HealthProbeDebugEvent) -> StructuredLogEvent {
-    let mut fields = vec![
-        (
-            "revision_id".to_string(),
-            event.revision_id.as_str().to_string(),
-        ),
-        ("generation".to_string(), event.generation.0.to_string()),
-        (
-            "service_id".to_string(),
-            event.key.service_id.as_str().to_string(),
-        ),
-        (
-            "upstream_id".to_string(),
-            event.key.upstream_id.as_str().to_string(),
-        ),
-        (
-            "outcome".to_string(),
-            health_probe_debug_reason_name(event.reason).to_string(),
-        ),
-    ];
-    if let Some(status_code) = event.status_code {
-        fields.push(("status_code".to_string(), status_code.to_string()));
-    }
-    fields.push(("duration_ms".to_string(), event.duration_ms.to_string()));
-    StructuredLogEvent {
-        component: "edge-application".to_string(),
-        event: "upstream_health_probe_debug".to_string(),
-        fields,
-    }
-}
-
-fn health_probe_debug_reason_name(reason: HealthProbeDebugReason) -> &'static str {
-    match reason {
-        HealthProbeDebugReason::Succeeded => "succeeded",
-        HealthProbeDebugReason::ConnectTimeout => "connect_timeout",
-        HealthProbeDebugReason::ConnectError => "connect_error",
-        HealthProbeDebugReason::WriteError => "write_error",
-        HealthProbeDebugReason::MalformedResponse => "malformed_response",
-        HealthProbeDebugReason::StatusMismatch => "status_mismatch",
-        HealthProbeDebugReason::ReadTimeout => "read_timeout",
-        HealthProbeDebugReason::ResponseTooLarge => "response_too_large",
-        HealthProbeDebugReason::TlsProfile => "tls_profile",
-        HealthProbeDebugReason::TlsHandshake => "tls_handshake",
-        HealthProbeDebugReason::TlsHandshakeTimeout => "tls_handshake_timeout",
-        HealthProbeDebugReason::Cancelled => "cancelled",
-        HealthProbeDebugReason::Internal => "internal",
-    }
-}
-
-pub fn structured_health_transition_log(event: &HealthTransitionEvent) -> StructuredLogEvent {
-    StructuredLogEvent {
-        component: "edge-application".to_string(),
-        event: "upstream_health_changed".to_string(),
-        fields: vec![
-            (
-                "revision_id".to_string(),
-                event.revision_id.as_str().to_string(),
-            ),
-            ("generation".to_string(), event.generation.0.to_string()),
-            (
-                "service_id".to_string(),
-                event.key.service_id.as_str().to_string(),
-            ),
-            (
-                "upstream_id".to_string(),
-                event.key.upstream_id.as_str().to_string(),
-            ),
-            (
-                "previous_state".to_string(),
-                availability_name(event.change.from).to_string(),
-            ),
-            (
-                "next_state".to_string(),
-                availability_name(event.change.to).to_string(),
-            ),
-        ],
-    }
-}
-
-pub fn health_transition_metric(event: &HealthTransitionEvent) -> MetricEvent {
-    MetricEvent::counter_add(
-        MetricDescriptor::UpstreamHealthTransitionsTotal,
-        1,
-        vec![
-            (
-                "service_id".to_string(),
-                event.key.service_id.as_str().to_string(),
-            ),
-            (
-                "upstream_id".to_string(),
-                event.key.upstream_id.as_str().to_string(),
-            ),
-            (
-                "from".to_string(),
-                availability_name(event.change.from).to_string(),
-            ),
-            (
-                "to".to_string(),
-                availability_name(event.change.to).to_string(),
-            ),
-        ],
-    )
-    .expect("health transition metric contract")
-}
-
-pub fn upstream_availability_metric(
-    key: &UpstreamHealthKey,
-    availability: UpstreamAvailability,
-) -> MetricEvent {
-    let available = match availability {
-        UpstreamAvailability::Healthy | UpstreamAvailability::Unknown => 1,
-        UpstreamAvailability::Disabled | UpstreamAvailability::Unhealthy => 0,
-    };
-    MetricEvent::gauge_set(
-        MetricDescriptor::UpstreamAvailable,
-        available,
-        health_key_labels(key),
-    )
-    .expect("upstream availability metric contract")
-}
-
-pub fn upstream_selection_metric(key: &UpstreamHealthKey) -> MetricEvent {
-    MetricEvent::counter_add(
-        MetricDescriptor::UpstreamSelectionsTotal,
-        1,
-        health_key_labels(key),
-    )
-    .expect("selection metric contract")
-}
-
-pub fn no_eligible_upstream_metric(service_id: &ServiceId) -> MetricEvent {
-    MetricEvent::counter_add(
-        MetricDescriptor::UpstreamNoEligibleTotal,
-        1,
-        vec![("service_id".into(), service_id.as_str().into())],
-    )
-    .expect("no eligible metric contract")
-}
-
-pub fn ignored_health_result_metric(
-    key: &UpstreamHealthKey,
-    reason: ProbeResultIgnored,
-) -> MetricEvent {
-    let _ = key;
-    MetricEvent::counter_add(
-        MetricDescriptor::MetricEventsDroppedTotal,
-        1,
-        vec![("reason".into(), ignored_result_name(reason).into())],
-    )
-    .expect("ignored metric contract")
-}
-
-pub fn health_dispatch_drop_metric(reason: HealthDispatchDropReason) -> MetricEvent {
-    MetricEvent::counter_add(
-        MetricDescriptor::MetricEventsDroppedTotal,
-        1,
-        vec![("reason".into(), dispatch_drop_name(reason).into())],
-    )
-    .expect("dispatch metric contract")
-}
-
-pub fn record_health_transition_log<L>(
-    sink: &mut L,
-    event: &HealthTransitionEvent,
-) -> Result<(), AppError>
-where
-    L: LogSink + ?Sized,
-{
-    sink.record_log(structured_health_transition_log(event))
-}
-
-pub fn record_health_transition_metric<M>(
-    sink: &mut M,
-    event: &HealthTransitionEvent,
-) -> Result<(), AppError>
-where
-    M: MetricsSink + ?Sized,
-{
-    sink.record_metric(health_transition_metric(event))
-}
-
-fn health_key_labels(key: &UpstreamHealthKey) -> Vec<(String, String)> {
-    vec![
-        (
-            "service_id".to_string(),
-            key.service_id.as_str().to_string(),
-        ),
-        (
-            "upstream_id".to_string(),
-            key.upstream_id.as_str().to_string(),
-        ),
-    ]
-}
-
-fn availability_name(availability: UpstreamAvailability) -> &'static str {
-    match availability {
-        UpstreamAvailability::Disabled => "disabled",
-        UpstreamAvailability::Unknown => "unknown",
-        UpstreamAvailability::Healthy => "healthy",
-        UpstreamAvailability::Unhealthy => "unhealthy",
-    }
-}
-
-fn ignored_result_name(reason: ProbeResultIgnored) -> &'static str {
-    match reason {
-        ProbeResultIgnored::StaleGeneration => "stale_generation",
-        ProbeResultIgnored::UnknownUpstream => "unknown_upstream",
-        ProbeResultIgnored::NotInFlight => "not_in_flight",
-        ProbeResultIgnored::RequestMismatch => "request_mismatch",
-        ProbeResultIgnored::Stopped => "stopped",
-    }
-}
-
-fn dispatch_drop_name(reason: HealthDispatchDropReason) -> &'static str {
-    match reason {
-        HealthDispatchDropReason::QueueFull => "queue_full",
-        HealthDispatchDropReason::WorkerStopped => "worker_stopped",
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -525,42 +132,14 @@ pub struct HealthSupervisor {
     next_probe_id: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HealthRuntimeCoordinatorState {
-    Running,
-    Stopped,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct HealthTickSummary {
-    pub requested: usize,
-    pub accepted: usize,
-    pub full: usize,
-    pub stopped: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct HealthRuntimeCoordinator {
-    supervisor: HealthSupervisor,
-    state: HealthRuntimeCoordinatorState,
-}
-
-impl HealthRuntimeCoordinator {
-    pub fn activate(
-        snapshot: &ConfigSnapshot,
-        generation: HealthGeneration,
-        now_ms: u64,
-    ) -> Result<Self, AppError> {
-        Self::activate_reconciled(snapshot, generation, now_ms, None)
-    }
-
-    pub fn activate_reconciled(
+impl HealthSupervisor {
+    pub(crate) fn activate_reconciled(
         snapshot: &ConfigSnapshot,
         generation: HealthGeneration,
         now_ms: u64,
         previous: Option<&HealthReconciliationSnapshot>,
     ) -> Result<Self, AppError> {
-        let mut supervisor = HealthSupervisor::activate(snapshot, generation, now_ms)?;
+        let mut supervisor = Self::activate(snapshot, generation, now_ms)?;
         if let Some(previous) = previous {
             for (key, entry) in &mut supervisor.entries {
                 let Some(prior) = previous.entries.get(key) else {
@@ -574,26 +153,14 @@ impl HealthRuntimeCoordinator {
                 }
             }
         }
-        Ok(Self {
-            supervisor,
-            state: HealthRuntimeCoordinatorState::Running,
-        })
+        Ok(supervisor)
     }
 
-    pub fn state(&self) -> HealthRuntimeCoordinatorState {
-        self.state
-    }
-
-    pub fn availability(&self, key: &UpstreamHealthKey) -> Option<UpstreamAvailability> {
-        self.supervisor.availability(key)
-    }
-
-    pub fn availability_snapshot(&self) -> HealthAvailabilitySnapshot {
+    pub(crate) fn availability_snapshot(&self) -> HealthAvailabilitySnapshot {
         HealthAvailabilitySnapshot {
-            revision_id: self.supervisor.revision_id.clone(),
-            generation: self.supervisor.generation,
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
             entries: self
-                .supervisor
                 .entries
                 .iter()
                 .map(|(key, entry)| (key.clone(), entry.health.availability()))
@@ -601,12 +168,11 @@ impl HealthRuntimeCoordinator {
         }
     }
 
-    pub fn reconciliation_snapshot(&self) -> HealthReconciliationSnapshot {
+    pub(crate) fn reconciliation_snapshot(&self) -> HealthReconciliationSnapshot {
         HealthReconciliationSnapshot {
-            revision_id: self.supervisor.revision_id.clone(),
-            generation: self.supervisor.generation,
+            revision_id: self.revision_id.clone(),
+            generation: self.generation,
             entries: self
-                .supervisor
                 .entries
                 .iter()
                 .map(|(key, entry)| {
@@ -624,59 +190,6 @@ impl HealthRuntimeCoordinator {
         }
     }
 
-    pub fn handle_tick(
-        &mut self,
-        now_ms: u64,
-        max_work: usize,
-        dispatcher: &dyn HealthProbeDispatcher,
-    ) -> HealthTickSummary {
-        if self.state == HealthRuntimeCoordinatorState::Stopped {
-            return HealthTickSummary::default();
-        }
-        let work = self.supervisor.handle_tick(now_ms, max_work);
-        let mut summary = HealthTickSummary {
-            requested: work.len(),
-            ..HealthTickSummary::default()
-        };
-        for request in work {
-            match dispatcher.submit(request.clone()) {
-                HealthProbeSubmit::Accepted => summary.accepted += 1,
-                HealthProbeSubmit::Full => {
-                    summary.full += 1;
-                    self.supervisor
-                        .handle_probe_dispatch_rejected(&request, now_ms);
-                }
-                HealthProbeSubmit::Stopped => {
-                    summary.stopped += 1;
-                    self.state = HealthRuntimeCoordinatorState::Stopped;
-                    self.supervisor.shutdown();
-                    break;
-                }
-            }
-        }
-        summary
-    }
-
-    pub fn handle_completion(
-        &mut self,
-        completion: HealthProbeCompletion,
-        completed_at_ms: u64,
-    ) -> HandleProbeResult {
-        let observation = match completion.result.outcome {
-            HealthProbeOutcome::Succeeded { .. } => HealthObservation::Succeeded,
-            HealthProbeOutcome::Failed(_) => HealthObservation::Failed,
-        };
-        self.supervisor
-            .handle_probe_result(&completion.request, observation, completed_at_ms)
-    }
-
-    pub fn shutdown(&mut self) {
-        self.state = HealthRuntimeCoordinatorState::Stopped;
-        self.supervisor.shutdown();
-    }
-}
-
-impl HealthSupervisor {
     pub fn activate(
         snapshot: &ConfigSnapshot,
         generation: HealthGeneration,
@@ -911,6 +424,18 @@ fn health_jitter_ms(
 
 #[cfg(test)]
 mod tests {
+    use crate::health_probe_observability::{
+        structured_health_probe_debug_log, FieldDebugHealthSampler, HealthProbeDebugEvent,
+    };
+    use crate::health_runtime_metrics::{
+        health_dispatch_drop_metric, health_key_labels, ignored_health_result_metric,
+        no_eligible_upstream_metric, upstream_availability_metric, upstream_selection_metric,
+    };
+    use crate::health_transition_observability::{
+        availability_name, health_transition_metric, record_health_transition_log,
+        record_health_transition_metric, structured_health_transition_log, HealthTransitionEvent,
+    };
+    use crate::{HealthRuntimeCoordinator, HealthRuntimeCoordinatorState, HealthTickSummary};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -921,7 +446,7 @@ mod tests {
     };
     use edge_ports::{
         HealthProbeCompletion, HealthProbeDispatcher, HealthProbeFailure, HealthProbeResult,
-        HealthProbeSubmit,
+        HealthProbeSubmit, MetricDescriptor,
     };
 
     use super::*;
@@ -1366,7 +891,7 @@ mod tests {
         policy.unhealthy_threshold = 2;
         let mut old =
             HealthRuntimeCoordinator::activate(&previous, HealthGeneration(20), 0).unwrap();
-        let request = old.supervisor.handle_tick(0, 1).remove(0);
+        let request = old.supervisor_for_test().handle_tick(0, 1).remove(0);
         let completion = HealthProbeCompletion {
             request,
             result: edge_ports::HealthProbeResult::failed(
@@ -1387,9 +912,9 @@ mod tests {
             Some(&state),
         )
         .unwrap();
-        let request = same.supervisor.handle_tick(0, 1).remove(0);
+        let request = same.supervisor_for_test().handle_tick(0, 1).remove(0);
         assert!(matches!(
-            same.supervisor
+            same.supervisor_for_test()
                 .handle_probe_result(&request, HealthObservation::Failed, 10),
             HandleProbeResult::Applied {
                 availability: UpstreamAvailability::Unhealthy,
@@ -1406,11 +931,13 @@ mod tests {
             Some(&state),
         )
         .unwrap();
-        let request = reset.supervisor.handle_tick(0, 1).remove(0);
+        let request = reset.supervisor_for_test().handle_tick(0, 1).remove(0);
         assert!(matches!(
-            reset
-                .supervisor
-                .handle_probe_result(&request, HealthObservation::Failed, 10),
+            reset.supervisor_for_test().handle_probe_result(
+                &request,
+                HealthObservation::Failed,
+                10
+            ),
             HandleProbeResult::Applied {
                 availability: UpstreamAvailability::Unknown,
                 change: None
@@ -1435,8 +962,8 @@ mod tests {
         policy.unhealthy_threshold = 2;
         let mut old =
             HealthRuntimeCoordinator::activate(&previous, HealthGeneration(42), 0).unwrap();
-        let request = old.supervisor.handle_tick(0, 1).remove(0);
-        old.supervisor
+        let request = old.supervisor_for_test().handle_tick(0, 1).remove(0);
+        old.supervisor_for_test()
             .handle_probe_result(&request, HealthObservation::Failed, 10);
         let state = old.reconciliation_snapshot();
 
@@ -1454,10 +981,10 @@ mod tests {
             Some(&state),
         )
         .unwrap();
-        let request = next.supervisor.handle_tick(0, 1).remove(0);
+        let request = next.supervisor_for_test().handle_tick(0, 1).remove(0);
 
         assert!(matches!(
-            next.supervisor
+            next.supervisor_for_test()
                 .handle_probe_result(&request, HealthObservation::Failed, 10),
             HandleProbeResult::Applied {
                 availability: UpstreamAvailability::Unknown,
@@ -1471,8 +998,8 @@ mod tests {
         let previous = snapshot();
         let mut old =
             HealthRuntimeCoordinator::activate(&previous, HealthGeneration(30), 0).unwrap();
-        let request = old.supervisor.handle_tick(0, 1).remove(0);
-        old.supervisor
+        let request = old.supervisor_for_test().handle_tick(0, 1).remove(0);
+        old.supervisor_for_test()
             .handle_probe_result(&request, HealthObservation::Failed, 10);
         let state = old.reconciliation_snapshot();
         assert_eq!(state.revision_id.as_str(), "rev-health");

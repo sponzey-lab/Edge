@@ -4,444 +4,104 @@
 //! command boundary, timers, and resource limits. Actual HTTP proxying is added
 //! in later tasks.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+#[cfg(test)]
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
+#[cfg(test)]
+use edge_domain::ResourceChargeState;
+#[cfg(test)]
+use edge_domain::FIXED_RESPONSE_BUFFER_RESERVE_BYTES;
 use edge_domain::{
-    AppError, CertificateRef, CommandAck, ConfigSnapshot, CoreCommand, ErrorCode,
-    HttpUpstreamEndpoint, ResourceChargeState, RuntimeResourcePolicy, ServiceId, TlsServerName,
-    UpstreamEndpoint, UpstreamId, UpstreamTlsPolicy, DEFAULT_MAX_CONNECTIONS,
-    DEFAULT_MAX_REQUEST_BODY_BYTES, FIXED_REQUEST_HEADER_RESERVE_BYTES,
-    FIXED_RESPONSE_BUFFER_RESERVE_BYTES,
+    AppError, CommandAck, ConfigSnapshot, CoreCommand, ErrorCode, HttpUpstreamEndpoint,
+    RuntimeResourcePolicy, UpstreamEndpoint,
 };
-use edge_ports::{
-    ClientTlsSessionFactory, ServerTlsSessionFactory, TlsPendingBytes, TlsSession,
-    TlsSessionProgress,
+mod client_response_charge_transaction;
+mod command_queue;
+mod connection_io;
+mod connection_state;
+mod connection_table;
+mod connection_transport;
+mod http_forwarding_policy;
+mod http_request;
+mod payload_budget_ledger;
+mod payload_charge_slot;
+mod pending_payload_ownership;
+mod pending_socket_output;
+mod request_payload_charge;
+mod resource_admission_policy;
+mod resource_limits;
+mod timer_queue;
+mod tls_handshake;
+mod tls_pending_payload_charge;
+mod tls_registry;
+mod tls_transport;
+mod token_allocator;
+mod upstream_attempt;
+mod upstream_response_framing;
+mod upstream_retry_charge_pair;
+mod worker_event_queue;
+mod write_buffer;
+
+pub use command_queue::{BoundedCommandQueue, QueueError};
+pub use connection_io::{Connection, HttpConnectionIo};
+pub use connection_state::{
+    timeout_decision_for_state, ConnectionEvent, ConnectionInterest, ConnectionState,
+    ConnectionTimeoutDecision, ConnectionTimeoutKind, RouteSelectionTarget,
 };
-use mio::Token;
+pub use connection_table::ConnectionTable;
+pub use connection_transport::{
+    ClientTransport, PlaintextClientTransport, PlaintextUpstreamTransport, UpstreamTransport,
+};
+pub use http_forwarding_policy::{
+    forwarded_headers, https_redirect_location, is_websocket_upgrade, remove_hop_by_hop_headers,
+    upstream_request_headers,
+};
+pub use http_request::{
+    parse_http_request, ClientRequestBuffer, Header, HttpLimits, HttpRequest, RequestReadOutcome,
+};
+pub use payload_budget_ledger::{
+    PayloadBudgetLedger, PayloadCharge, PayloadClass, ResourceChargeId,
+};
+pub use pending_socket_output::PendingSocketOutput;
+pub use resource_admission_policy::{
+    connection_admission_decision, response_read_interest_action, ConnectionAdmissionDecision,
+    ResourcePressureState, ResponseReadInterestAction,
+};
+pub use resource_limits::ResourceLimits;
+pub use timer_queue::TimerQueue;
+pub use tls_handshake::{
+    select_certificate_for_sni, CertificateSelection, TlsHandshakeEvent, TlsHandshakeMachine,
+    TlsHandshakeOutcome, TlsHandshakeState,
+};
+pub use tls_registry::{PreparedClientTlsRegistry, PreparedServerTlsRegistry};
+pub use tls_transport::{TlsTransport, TlsTransportState};
+pub use token_allocator::{ConnectionToken, TokenAllocator};
+pub use upstream_attempt::{
+    UpstreamAttemptFailure, UpstreamAttemptPhase, UpstreamAttemptProgress, UpstreamAttemptTerminal,
+};
+pub use upstream_response_framing::{HttpResponseFraming, ResponseFramingPhase};
+pub use worker_event_queue::{WorkerEvent, WorkerEventQueue};
+pub use write_buffer::WriteBuffer;
+
+use client_response_charge_transaction::ClientResponseChargeChange;
+use payload_budget_ledger::resource_accounting_error;
+use payload_charge_slot::{
+    bytes as charge_bytes, release as release_charge_slot, sync as sync_payload_charge_slot,
+};
+use pending_payload_ownership::{tls_pending_owner_bytes, websocket_pending_owner_bytes};
+use tls_registry::runtime_generation_error;
+use upstream_attempt::{invalid_upstream_attempt_transition, upstream_failure_response_spec};
 
 /// Foundation smoke helper.
 pub fn crate_name() -> &'static str {
     "edge-core"
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Header {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HttpRequest {
-    pub method: String,
-    pub path: String,
-    pub version: String,
-    pub headers: Vec<Header>,
-    pub body: Vec<u8>,
-}
-
-impl HttpRequest {
-    pub fn header_value(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|header| header.name.eq_ignore_ascii_case(name))
-            .map(|header| header.value.as_str())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HttpLimits {
-    pub max_request_line_bytes: usize,
-    pub max_header_bytes: usize,
-    pub max_header_count: usize,
-    pub max_body_bytes: usize,
-}
-
-impl Default for HttpLimits {
-    fn default() -> Self {
-        Self {
-            max_request_line_bytes: 8 * 1024,
-            max_header_bytes: FIXED_REQUEST_HEADER_RESERVE_BYTES,
-            max_header_count: 100,
-            max_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
-        }
-    }
-}
-
-pub fn parse_http_request(input: &[u8], limits: &HttpLimits) -> Result<HttpRequest, AppError> {
-    let header_end = input
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| AppError::new(ErrorCode::HttpMalformedRequest, "missing header end"))?;
-    let header_bytes = &input[..header_end];
-    let body = input[(header_end + 4)..].to_vec();
-
-    if header_bytes.len() > limits.max_header_bytes {
-        return Err(AppError::new(
-            ErrorCode::HttpHeaderTooLarge,
-            "headers exceed limit",
-        ));
-    }
-    if body.len() > limits.max_body_bytes {
-        return Err(AppError::new(
-            ErrorCode::HttpRequestBodyTooLarge,
-            "body exceeds limit",
-        ));
-    }
-
-    let header_text = std::str::from_utf8(header_bytes)
-        .map_err(|_| AppError::new(ErrorCode::HttpMalformedRequest, "headers are not UTF-8"))?;
-    let mut lines = header_text.split("\r\n");
-    let request_line = lines
-        .next()
-        .ok_or_else(|| AppError::new(ErrorCode::HttpMalformedRequest, "missing request line"))?;
-
-    if request_line.len() > limits.max_request_line_bytes {
-        return Err(AppError::new(
-            ErrorCode::HttpRequestLineTooLarge,
-            "request line exceeds limit",
-        ));
-    }
-
-    let mut request_parts = request_line.split_whitespace();
-    let method = request_parts
-        .next()
-        .ok_or_else(|| AppError::new(ErrorCode::HttpMalformedRequest, "missing method"))?
-        .to_string();
-    let path = request_parts
-        .next()
-        .ok_or_else(|| AppError::new(ErrorCode::HttpMalformedRequest, "missing path"))?
-        .to_string();
-    let version = request_parts
-        .next()
-        .ok_or_else(|| AppError::new(ErrorCode::HttpMalformedRequest, "missing version"))?
-        .to_string();
-
-    if method.eq_ignore_ascii_case("CONNECT") {
-        return Err(AppError::new(
-            ErrorCode::HttpConnectMethodRejected,
-            "CONNECT is not supported",
-        ));
-    }
-
-    let mut headers = Vec::new();
-    for line in lines {
-        if headers.len() >= limits.max_header_count {
-            return Err(AppError::new(
-                ErrorCode::HttpHeaderTooLarge,
-                "too many headers",
-            ));
-        }
-        let (name, value) = line
-            .split_once(':')
-            .ok_or_else(|| AppError::new(ErrorCode::HttpMalformedRequest, "malformed header"))?;
-        headers.push(Header {
-            name: name.trim().to_string(),
-            value: value.trim().to_string(),
-        });
-    }
-
-    let expected_body_len = expected_request_body_len_from_headers(&headers)?;
-    if expected_body_len > limits.max_body_bytes {
-        return Err(AppError::new(
-            ErrorCode::HttpRequestBodyTooLarge,
-            "body exceeds limit",
-        ));
-    }
-
-    Ok(HttpRequest {
-        method,
-        path,
-        version,
-        headers,
-        body,
-    })
-}
-
-fn expected_request_body_len_from_headers(headers: &[Header]) -> Result<usize, AppError> {
-    let mut content_length = None;
-    let mut has_transfer_encoding = false;
-
-    for header in headers {
-        if header.name.eq_ignore_ascii_case("Transfer-Encoding") && !header.value.trim().is_empty()
-        {
-            has_transfer_encoding = true;
-        }
-
-        if header.name.eq_ignore_ascii_case("Content-Length") {
-            let parsed = header.value.trim().parse::<usize>().map_err(|_| {
-                AppError::new(ErrorCode::HttpMalformedRequest, "invalid content length")
-            })?;
-            if let Some(existing) = content_length {
-                if existing != parsed {
-                    return Err(AppError::new(
-                        ErrorCode::HttpTransferEncodingContentLengthConflict,
-                        "conflicting content length headers",
-                    ));
-                }
-            } else {
-                content_length = Some(parsed);
-            }
-        }
-    }
-
-    if has_transfer_encoding && content_length.is_some() {
-        return Err(AppError::new(
-            ErrorCode::HttpTransferEncodingContentLengthConflict,
-            "ambiguous transfer length",
-        ));
-    }
-    if has_transfer_encoding {
-        return Err(AppError::new(
-            ErrorCode::HttpMalformedRequest,
-            "transfer encoding is not supported by the MVP runtime",
-        ));
-    }
-
-    Ok(content_length.unwrap_or(0))
-}
-
-fn expected_request_body_len_from_header_bytes(header_bytes: &[u8]) -> Result<usize, AppError> {
-    let text = std::str::from_utf8(header_bytes)
-        .map_err(|_| AppError::new(ErrorCode::HttpMalformedRequest, "headers are not UTF-8"))?;
-    let mut lines = text.split("\r\n");
-    let _request_line = lines
-        .next()
-        .ok_or_else(|| AppError::new(ErrorCode::HttpMalformedRequest, "missing request line"))?;
-    let mut headers = Vec::new();
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        let (name, value) = line
-            .split_once(':')
-            .ok_or_else(|| AppError::new(ErrorCode::HttpMalformedRequest, "malformed header"))?;
-        headers.push(Header {
-            name: name.trim().to_string(),
-            value: value.trim().to_string(),
-        });
-    }
-    expected_request_body_len_from_headers(&headers)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RequestReadOutcome {
-    Incomplete,
-    Complete(Vec<u8>),
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ClientRequestBuffer {
-    bytes: Vec<u8>,
-    header_end: Option<usize>,
-}
-
-impl ClientRequestBuffer {
-    pub fn push(
-        &mut self,
-        chunk: &[u8],
-        limits: &HttpLimits,
-    ) -> Result<RequestReadOutcome, AppError> {
-        self.bytes.extend_from_slice(chunk);
-
-        if self.header_end.is_none() {
-            self.header_end = self
-                .bytes
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .map(|position| position + 4);
-        }
-
-        let Some(header_end) = self.header_end else {
-            if self.bytes.len() > limits.max_header_bytes {
-                return Err(AppError::new(
-                    ErrorCode::HttpHeaderTooLarge,
-                    "headers exceed limit",
-                ));
-            }
-            return Ok(RequestReadOutcome::Incomplete);
-        };
-
-        if header_end.saturating_sub(4) > limits.max_header_bytes {
-            return Err(AppError::new(
-                ErrorCode::HttpHeaderTooLarge,
-                "headers exceed limit",
-            ));
-        }
-
-        let expected_body_len =
-            expected_request_body_len_from_header_bytes(&self.bytes[..header_end - 4])?;
-        if expected_body_len > limits.max_body_bytes {
-            return Err(AppError::new(
-                ErrorCode::HttpRequestBodyTooLarge,
-                "body exceeds limit",
-            ));
-        }
-        if self.bytes.len() > header_end + limits.max_body_bytes {
-            return Err(AppError::new(
-                ErrorCode::HttpRequestBodyTooLarge,
-                "request exceeds configured body limit",
-            ));
-        }
-        if self.bytes.len() >= header_end + expected_body_len {
-            self.header_end = None;
-            return Ok(RequestReadOutcome::Complete(std::mem::take(
-                &mut self.bytes,
-            )));
-        }
-
-        Ok(RequestReadOutcome::Incomplete)
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WriteBuffer {
-    bytes: Vec<u8>,
-    written: usize,
-}
-
-impl WriteBuffer {
-    pub fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes, written: 0 }
-    }
-
-    pub fn try_append(&mut self, chunk: &[u8]) -> Result<(), AppError> {
-        self.try_reserve_append(chunk.len())?;
-        self.bytes.extend_from_slice(chunk);
-        Ok(())
-    }
-
-    fn try_reserve_append(&mut self, additional_bytes: usize) -> Result<(), AppError> {
-        self.bytes
-            .len()
-            .checked_add(additional_bytes)
-            .ok_or_else(resource_allocation_error)?;
-        self.bytes
-            .try_reserve_exact(additional_bytes)
-            .map_err(|_| resource_allocation_error())
-    }
-
-    pub fn remaining(&self) -> &[u8] {
-        &self.bytes[self.written..]
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    pub fn remaining_len(&self) -> usize {
-        self.remaining().len()
-    }
-
-    pub fn is_complete(&self) -> bool {
-        self.written >= self.bytes.len()
-    }
-
-    pub fn advance(&mut self, byte_count: usize) -> usize {
-        let advanced = byte_count.min(self.remaining_len());
-        self.written += advanced;
-        advanced
-    }
-
-    pub fn advance_and_clear_if_complete(&mut self, byte_count: usize) -> usize {
-        let advanced = self.advance(byte_count);
-        self.clear_if_complete();
-        advanced
-    }
-
-    pub fn clear_if_complete(&mut self) -> bool {
-        if !self.is_complete() || self.bytes.is_empty() {
-            return false;
-        }
-        self.bytes.clear();
-        self.written = 0;
-        true
-    }
-
-    pub fn try_replace_if_complete(&mut self, bytes: &[u8]) -> Result<bool, AppError> {
-        if !self.is_complete() {
-            return Ok(false);
-        }
-        let additional = bytes.len().saturating_sub(self.bytes.len());
-        self.bytes
-            .try_reserve_exact(additional)
-            .map_err(|_| resource_allocation_error())?;
-        self.bytes.clear();
-        self.bytes.extend_from_slice(bytes);
-        self.written = 0;
-        Ok(true)
-    }
-}
-
-fn resource_allocation_error() -> AppError {
-    AppError::new(
-        ErrorCode::ResourceAllocationFailed,
-        "managed buffer allocation failed",
-    )
-}
-
-pub fn remove_hop_by_hop_headers(headers: &[Header]) -> Vec<Header> {
-    let mut connection_tokens = Vec::new();
-    for header in headers {
-        if header.name.eq_ignore_ascii_case("Connection") {
-            connection_tokens.extend(
-                header
-                    .value
-                    .split(',')
-                    .map(|value| value.trim().to_ascii_lowercase()),
-            );
-        }
-    }
-
-    headers
-        .iter()
-        .filter(|header| {
-            let name = header.name.to_ascii_lowercase();
-            !matches!(
-                name.as_str(),
-                "connection"
-                    | "keep-alive"
-                    | "proxy-authenticate"
-                    | "proxy-authorization"
-                    | "te"
-                    | "trailer"
-                    | "transfer-encoding"
-                    | "upgrade"
-            ) && !connection_tokens.iter().any(|token| token == &name)
-        })
-        .cloned()
-        .collect()
-}
-
-pub fn forwarded_headers(client_ip: &str, scheme: &str, host: &str) -> [Header; 3] {
-    [
-        Header {
-            name: "X-Forwarded-For".to_string(),
-            value: client_ip.to_string(),
-        },
-        Header {
-            name: "X-Forwarded-Proto".to_string(),
-            value: scheme.to_string(),
-        },
-        Header {
-            name: "X-Forwarded-Host".to_string(),
-            value: host.to_string(),
-        },
-    ]
-}
-
-pub fn is_websocket_upgrade(request: &HttpRequest) -> bool {
-    request
-        .header_value("Connection")
-        .is_some_and(|value| value.to_ascii_lowercase().contains("upgrade"))
-        && request
-            .header_value("Upgrade")
-            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
-}
-
-pub fn https_redirect_location(host: &str, path: &str) -> String {
-    format!("https://{host}{path}")
 }
 
 pub type UpstreamTarget = HttpUpstreamEndpoint;
@@ -472,9 +132,10 @@ pub mod legacy_single_upstream {
     use mio::{Events, Interest, Poll, Token};
 
     use super::{
-        forwarded_headers, is_websocket_upgrade, parse_http_request, remove_hop_by_hop_headers,
+        forwarded_headers, is_websocket_upgrade, parse_http_request, upstream_request_headers,
         AppError, ErrorCode, HttpLimits, HttpRequest, UpstreamTarget,
     };
+    use crate::http_forwarding_policy::UpstreamResponseHeaderSanitizer;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SingleUpstreamProxyConfig {
@@ -550,10 +211,11 @@ pub mod legacy_single_upstream {
             return tunnel_websocket(client, &request, &upstream, &client_ip);
         }
 
-        let upstream_response = match forward_http_request(&request, &upstream, &client_ip) {
-            Ok(response) => response,
-            Err(_) => http_error_response(502, "Bad Gateway"),
-        };
+        let upstream_response =
+            match forward_http_request_with_limits(&request, &upstream, &client_ip, &limits) {
+                Ok(response) => response,
+                Err(_) => http_error_response(502, "Bad Gateway"),
+            };
         client.write_all(&upstream_response)?;
         client.flush()
     }
@@ -562,6 +224,15 @@ pub mod legacy_single_upstream {
         request: &HttpRequest,
         upstream: &UpstreamTarget,
         client_ip: &str,
+    ) -> io::Result<Vec<u8>> {
+        forward_http_request_with_limits(request, upstream, client_ip, &HttpLimits::default())
+    }
+
+    fn forward_http_request_with_limits(
+        request: &HttpRequest,
+        upstream: &UpstreamTarget,
+        client_ip: &str,
+        limits: &HttpLimits,
     ) -> io::Result<Vec<u8>> {
         let mut upstream_stream = StdTcpStream::connect(upstream.address())?;
         upstream_stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -573,7 +244,9 @@ pub mod legacy_single_upstream {
 
         let mut response = Vec::new();
         upstream_stream.read_to_end(&mut response)?;
-        Ok(response)
+        UpstreamResponseHeaderSanitizer::new(limits.max_header_bytes)
+            .sanitize(&response)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.message))
     }
 
     fn tunnel_websocket(
@@ -626,21 +299,7 @@ pub mod legacy_single_upstream {
             .header_value("Host")
             .unwrap_or(upstream.host.as_str())
             .to_string();
-        let mut headers = if preserve_upgrade_headers {
-            request
-                .headers
-                .iter()
-                .filter(|header| {
-                    !matches!(
-                        header.name.to_ascii_lowercase().as_str(),
-                        "x-forwarded-for" | "x-forwarded-proto" | "x-forwarded-host"
-                    )
-                })
-                .cloned()
-                .collect()
-        } else {
-            remove_hop_by_hop_headers(&request.headers)
-        };
+        let mut headers = upstream_request_headers(&request.headers, preserve_upgrade_headers);
         headers.retain(|header| {
             !matches!(
                 header.name.to_ascii_lowercase().as_str(),
@@ -818,19 +477,26 @@ pub mod snapshot_http {
     use mio::net::{TcpListener, TcpStream as MioTcpStream};
     use mio::{Events, Interest, Poll, Token, Waker};
 
+    use crate::http_forwarding_policy::UpstreamResponseHeaderSanitizer;
+    use crate::upstream_attempt::{
+        upstream_response_failure_disposition, UpstreamResponseFailureDisposition,
+    };
+    use crate::upstream_response_framing::{
+        parse_response_status_code, HttpResponseFraming, ResponseFramingPhase,
+    };
+
     use super::{
         connection_admission_decision, forwarded_headers, invalid_upstream_attempt_transition,
-        is_websocket_upgrade, parse_http_request, remove_hop_by_hop_headers,
-        resource_accounting_error, response_read_interest_action, runtime_generation_error,
-        timeout_decision_for_state, AppError, BTreeSet, ClientTransport, CommandAck,
-        ConfigSnapshot, ConnectionAdmissionDecision, ConnectionEvent, ConnectionInterest,
-        ConnectionPayloadCharges, ConnectionState, ConnectionTimeoutKind, ConnectionToken,
-        CoreCommand, ErrorCode, Header, HttpConnectionIo, HttpLimits, HttpRequest,
-        PayloadBudgetLedger, PendingSocketOutput, PreparedClientTlsRegistry,
-        PreparedServerTlsRegistry, RequestReadOutcome, ResourceLimits, ResourcePressureState,
-        ResponseReadInterestAction, RuntimeResourcePolicy, TlsTransportState,
-        UpstreamAttemptFailure, UpstreamEndpoint, UpstreamRequestTarget, UpstreamTarget,
-        UpstreamTransport, WriteBuffer,
+        is_websocket_upgrade, parse_http_request, resource_accounting_error,
+        response_read_interest_action, runtime_generation_error, timeout_decision_for_state,
+        upstream_request_headers, AppError, BTreeSet, ClientTransport, CommandAck, ConfigSnapshot,
+        ConnectionAdmissionDecision, ConnectionEvent, ConnectionInterest, ConnectionPayloadCharges,
+        ConnectionState, ConnectionTimeoutKind, ConnectionToken, CoreCommand, ErrorCode, Header,
+        HttpConnectionIo, HttpLimits, HttpRequest, PayloadBudgetLedger, PendingSocketOutput,
+        PreparedClientTlsRegistry, PreparedServerTlsRegistry, RequestReadOutcome, ResourceLimits,
+        ResourcePressureState, ResponseReadInterestAction, RuntimeResourcePolicy,
+        TlsTransportState, UpstreamAttemptFailure, UpstreamEndpoint, UpstreamRequestTarget,
+        UpstreamTarget, UpstreamTransport, WriteBuffer,
     };
 
     #[derive(Debug)]
@@ -2412,6 +2078,7 @@ pub mod snapshot_http {
                                 drain_reference: None,
                                 resource_charges: ConnectionPayloadCharges::default(),
                                 response_framing: None,
+                                response_header_sanitizer: None,
                             },
                         );
                         self.emit_active_connection_metric();
@@ -3288,9 +2955,19 @@ pub mod snapshot_http {
                             {
                                 Ok(plaintext) => plaintext,
                                 Err(_) => {
-                                    let failure = UpstreamAttemptFailure::Read;
+                                    let response_started =
+                                        connection.io.upstream_attempt().response_started();
+                                    let failure = if response_started {
+                                        UpstreamAttemptFailure::ResetAfterResponse
+                                    } else {
+                                        UpstreamAttemptFailure::Read
+                                    };
                                     let _ = connection.io.fail_upstream_attempt(failure);
-                                    failure_response = Some(upstream_failure_response(failure));
+                                    if response_started {
+                                        close_partial_response = true;
+                                    } else {
+                                        failure_response = Some(upstream_failure_response(failure));
+                                    }
                                     break;
                                 }
                             };
@@ -3326,15 +3003,55 @@ pub mod snapshot_http {
                                     break;
                                 }
                             };
-                            let response_bytes = &plaintext[..progress.consumed];
+                            let response_bytes = match connection
+                                .response_header_sanitizer
+                                .as_mut()
+                                .ok_or_else(|| {
+                                    AppError::new(
+                                        ErrorCode::RuntimeUpstreamBadGateway,
+                                        "response header sanitizer owner is missing",
+                                    )
+                                })
+                                .and_then(|sanitizer| {
+                                    sanitizer.sanitize(&plaintext[..progress.consumed])
+                                }) {
+                                Ok(response_bytes) => response_bytes,
+                                Err(_) => {
+                                    let failure = if response_started {
+                                        UpstreamAttemptFailure::ResetAfterResponse
+                                    } else {
+                                        UpstreamAttemptFailure::Read
+                                    };
+                                    let _ = connection.io.fail_upstream_attempt(failure);
+                                    if response_started {
+                                        close_partial_response = true;
+                                    } else {
+                                        failure_response = Some(upstream_failure_response(failure));
+                                    }
+                                    break;
+                                }
+                            };
                             let Some(next_response_bytes) = connection
                                 .resource_charges
                                 .client_response_bytes(payload_ledger)
                                 .checked_add(response_bytes.len())
                             else {
-                                failure_response = Some(error_response_for_code(
-                                    ErrorCode::ResourceAllocationFailed,
-                                ));
+                                let failure = if response_started {
+                                    UpstreamAttemptFailure::ResetAfterResponse
+                                } else {
+                                    UpstreamAttemptFailure::Read
+                                };
+                                let _ = connection.io.fail_upstream_attempt(failure);
+                                match upstream_response_failure_disposition(response_started) {
+                                    UpstreamResponseFailureDisposition::QueueSyntheticResponse => {
+                                        failure_response = Some(error_response_for_code(
+                                            ErrorCode::ResourceAllocationFailed,
+                                        ));
+                                    }
+                                    UpstreamResponseFailureDisposition::FailClose => {
+                                        close_partial_response = true;
+                                    }
+                                }
                                 break;
                             };
                             let response_change = match connection
@@ -3346,11 +3063,26 @@ pub mod snapshot_http {
                                 ) {
                                 Ok(change) => change,
                                 Err(error) => {
-                                    failure_response = Some(error_response_for_code(error.code));
+                                    let failure = if response_started {
+                                        UpstreamAttemptFailure::ResetAfterResponse
+                                    } else {
+                                        UpstreamAttemptFailure::Read
+                                    };
+                                    let _ = connection.io.fail_upstream_attempt(failure);
+                                    match upstream_response_failure_disposition(response_started) {
+                                        UpstreamResponseFailureDisposition::QueueSyntheticResponse => {
+                                            failure_response =
+                                                Some(error_response_for_code(error.code));
+                                        }
+                                        UpstreamResponseFailureDisposition::FailClose => {
+                                            close_partial_response = true;
+                                        }
+                                    }
                                     break;
                                 }
                             };
-                            if let Err(error) = connection.io.receive_upstream_bytes(response_bytes)
+                            if let Err(error) =
+                                connection.io.receive_upstream_bytes(&response_bytes)
                             {
                                 let _ = connection
                                     .resource_charges
@@ -3358,18 +3090,44 @@ pub mod snapshot_http {
                                         payload_ledger,
                                         response_change,
                                     );
-                                let failure = UpstreamAttemptFailure::Read;
+                                let failure = if response_started {
+                                    UpstreamAttemptFailure::ResetAfterResponse
+                                } else {
+                                    UpstreamAttemptFailure::Read
+                                };
                                 let _ = connection.io.fail_upstream_attempt(failure);
-                                failure_response = Some(error_response_for_code(error.code));
+                                match upstream_response_failure_disposition(response_started) {
+                                    UpstreamResponseFailureDisposition::QueueSyntheticResponse => {
+                                        failure_response =
+                                            Some(error_response_for_code(error.code));
+                                    }
+                                    UpstreamResponseFailureDisposition::FailClose => {
+                                        close_partial_response = true;
+                                    }
+                                }
                                 break;
                             }
                             if let Err(error) = connection
                                 .resource_charges
                                 .commit_client_response_bytes(payload_ledger, response_change)
                             {
-                                let failure = UpstreamAttemptFailure::Read;
+                                let response_started =
+                                    connection.io.upstream_attempt().response_started();
+                                let failure = if response_started {
+                                    UpstreamAttemptFailure::ResetAfterResponse
+                                } else {
+                                    UpstreamAttemptFailure::Read
+                                };
                                 let _ = connection.io.fail_upstream_attempt(failure);
-                                failure_response = Some(error_response_for_code(error.code));
+                                match upstream_response_failure_disposition(response_started) {
+                                    UpstreamResponseFailureDisposition::QueueSyntheticResponse => {
+                                        failure_response =
+                                            Some(error_response_for_code(error.code));
+                                    }
+                                    UpstreamResponseFailureDisposition::FailClose => {
+                                        close_partial_response = true;
+                                    }
+                                }
                                 break;
                             }
                             #[cfg(test)]
@@ -3392,9 +3150,19 @@ pub mod snapshot_http {
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                         Err(_) => {
-                            let failure = UpstreamAttemptFailure::Read;
+                            let response_started =
+                                connection.io.upstream_attempt().response_started();
+                            let failure = if response_started {
+                                UpstreamAttemptFailure::ResetAfterResponse
+                            } else {
+                                UpstreamAttemptFailure::Read
+                            };
                             let _ = connection.io.fail_upstream_attempt(failure);
-                            failure_response = Some(upstream_failure_response(failure));
+                            if response_started {
+                                close_partial_response = true;
+                            } else {
+                                failure_response = Some(upstream_failure_response(failure));
+                            }
                             break;
                         }
                     }
@@ -4641,6 +4409,10 @@ pub mod snapshot_http {
                 ConnectionTimeoutKind::UpstreamRead => Some(UpstreamAttemptFailure::ReadTimeout),
                 ConnectionTimeoutKind::ClientIdle | ConnectionTimeoutKind::ClientWrite => None,
             };
+            let response_started = self
+                .connections
+                .get(&connection_id)
+                .is_some_and(|connection| connection.io.upstream_attempt().response_started());
             if let Some(failure) = upstream_timeout_failure {
                 if let Some(connection) = self.connections.get_mut(&connection_id) {
                     let _ = connection.io.fail_upstream_attempt(failure);
@@ -4655,6 +4427,21 @@ pub mod snapshot_http {
             }
 
             self.drop_upstream(connection_id, registry)?;
+            if matches!(
+                upstream_timeout_failure,
+                Some(UpstreamAttemptFailure::ReadTimeout)
+            ) && response_started
+            {
+                if let Some(connection) = self.connections.get_mut(&connection_id) {
+                    let _ = connection
+                        .io
+                        .connection
+                        .transition_to(ConnectionState::Failed);
+                    let _ = registry.deregister(&mut connection.client);
+                }
+                self.remove_connection(connection_id, true);
+                return Ok(());
+            }
             if let Some(failure) = upstream_timeout_failure {
                 if self.retry_upstream(connection_id, registry, snapshot, failure)? {
                     return Ok(());
@@ -5318,6 +5105,7 @@ pub mod snapshot_http {
         drain_reference: Option<DrainReference>,
         resource_charges: ConnectionPayloadCharges,
         response_framing: Option<HttpResponseFraming>,
+        response_header_sanitizer: Option<UpstreamResponseHeaderSanitizer>,
     }
 
     struct RetryContext {
@@ -5381,6 +5169,8 @@ pub mod snapshot_http {
 
     impl SnapshotMioConnection {
         fn begin_response_framing(&mut self, max_header_bytes: usize, websocket_requested: bool) {
+            self.response_header_sanitizer = (!websocket_requested)
+                .then(|| UpstreamResponseHeaderSanitizer::new(max_header_bytes));
             self.response_framing = if websocket_requested {
                 None
             } else if self
@@ -5616,7 +5406,39 @@ pub mod snapshot_http {
     }
 
     fn websocket_response_is_switching_protocols(bytes: &[u8]) -> bool {
-        bytes.starts_with(b"HTTP/1.1 101") || bytes.starts_with(b"HTTP/1.0 101")
+        let Some(header_end) = bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|position| position + 4)
+        else {
+            return false;
+        };
+        let headers = &bytes[..header_end];
+        let mut framing = HttpResponseFraming::new(headers.len(), headers.len());
+        if framing.push(headers).is_err() || framing.status_code() != Some(101) {
+            return false;
+        }
+        let Ok(header_text) = std::str::from_utf8(&headers[..headers.len() - 4]) else {
+            return false;
+        };
+        let mut lines = header_text.split("\r\n");
+        let _status_line = lines.next();
+        let mut connection_upgrade = false;
+        let mut websocket_upgrade = false;
+        for line in lines {
+            let Some((name, value)) = line.split_once(':') else {
+                return false;
+            };
+            if name.eq_ignore_ascii_case("Connection") {
+                connection_upgrade |= value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("upgrade"));
+            }
+            if name.eq_ignore_ascii_case("Upgrade") {
+                websocket_upgrade |= value.trim().eq_ignore_ascii_case("websocket");
+            }
+        }
+        connection_upgrade && websocket_upgrade
     }
 
     pub fn handle_snapshot_http_proxy_connection(
@@ -5711,6 +5533,7 @@ pub mod snapshot_http {
                     &client_ip,
                     scheme,
                     authority,
+                    &limits,
                 ) {
                     Ok(response) => response,
                     Err(_) => http_error_response(502, "Bad Gateway"),
@@ -5757,6 +5580,7 @@ pub mod snapshot_http {
         client_ip: &str,
         scheme: &str,
         original_host: &str,
+        limits: &HttpLimits,
     ) -> io::Result<Vec<u8>> {
         let mut upstream_stream = StdTcpStream::connect(upstream.address())?;
         upstream_stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -5769,7 +5593,9 @@ pub mod snapshot_http {
 
         let mut response = Vec::new();
         upstream_stream.read_to_end(&mut response)?;
-        Ok(response)
+        UpstreamResponseHeaderSanitizer::new(limits.max_header_bytes)
+            .sanitize(&response)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.message))
     }
 
     fn build_upstream_request<T>(
@@ -5807,11 +5633,7 @@ pub mod snapshot_http {
     where
         T: UpstreamRequestTarget + ?Sized,
     {
-        let mut headers = if preserve_upgrade_headers {
-            request.headers.clone()
-        } else {
-            remove_hop_by_hop_headers(&request.headers)
-        };
+        let mut headers = upstream_request_headers(&request.headers, preserve_upgrade_headers);
         headers.retain(|header| {
             !matches!(
                 header.name.to_ascii_lowercase().as_str(),
@@ -5959,11 +5781,7 @@ pub mod snapshot_http {
             UpstreamTlsPolicy::Disabled => None,
             UpstreamTlsPolicy::ServerAuthenticated { http_host, .. } => Some(http_host.as_str()),
         };
-        let mut headers = if preserve_upgrade_headers {
-            request.headers.clone()
-        } else {
-            remove_hop_by_hop_headers(&request.headers)
-        };
+        let mut headers = upstream_request_headers(&request.headers, preserve_upgrade_headers);
         headers.retain(|header| {
             !matches!(
                 header.name.to_ascii_lowercase().as_str(),
@@ -6099,419 +5917,6 @@ pub mod snapshot_http {
         .into_bytes();
         response.extend_from_slice(body);
         response
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum ResponseFramingPhase {
-        Headers,
-        ContentLength,
-        ChunkSize,
-        ChunkData,
-        ChunkDataCrlf,
-        Trailers,
-        CloseDelimited,
-        Complete,
-        Failed,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct ResponseFramingProgress {
-        pub consumed: usize,
-        pub input_len: usize,
-        pub phase: ResponseFramingPhase,
-        pub status_code: Option<u16>,
-    }
-
-    #[derive(Debug)]
-    enum ResponseFramingState {
-        Headers(Vec<u8>),
-        ContentLength { remaining: usize },
-        ChunkSize { line: Vec<u8> },
-        ChunkData { remaining: usize },
-        ChunkDataCrlf { matched: usize },
-        Trailers { line: Vec<u8> },
-        CloseDelimited,
-        Complete,
-        Failed,
-    }
-
-    #[derive(Debug)]
-    pub struct HttpResponseFraming {
-        state: ResponseFramingState,
-        max_header_bytes: usize,
-        max_line_bytes: usize,
-        body_expectation: ResponseBodyExpectation,
-        status_code: Option<u16>,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum ResponseBodyExpectation {
-        Normal,
-        HeadResponse,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum ResponseBodyFraming {
-        Interim,
-        None,
-        ContentLength(usize),
-        Chunked,
-        CloseDelimited,
-    }
-
-    impl HttpResponseFraming {
-        pub fn new(max_header_bytes: usize, max_line_bytes: usize) -> Self {
-            Self::with_body_expectation(
-                max_header_bytes,
-                max_line_bytes,
-                ResponseBodyExpectation::Normal,
-            )
-        }
-
-        pub fn new_for_head_response(max_header_bytes: usize, max_line_bytes: usize) -> Self {
-            Self::with_body_expectation(
-                max_header_bytes,
-                max_line_bytes,
-                ResponseBodyExpectation::HeadResponse,
-            )
-        }
-
-        fn with_body_expectation(
-            max_header_bytes: usize,
-            max_line_bytes: usize,
-            body_expectation: ResponseBodyExpectation,
-        ) -> Self {
-            Self {
-                state: ResponseFramingState::Headers(Vec::new()),
-                max_header_bytes,
-                max_line_bytes,
-                body_expectation,
-                status_code: None,
-            }
-        }
-
-        pub fn phase(&self) -> ResponseFramingPhase {
-            match self.state {
-                ResponseFramingState::Headers(_) => ResponseFramingPhase::Headers,
-                ResponseFramingState::ContentLength { .. } => ResponseFramingPhase::ContentLength,
-                ResponseFramingState::ChunkSize { .. } => ResponseFramingPhase::ChunkSize,
-                ResponseFramingState::ChunkData { .. } => ResponseFramingPhase::ChunkData,
-                ResponseFramingState::ChunkDataCrlf { .. } => ResponseFramingPhase::ChunkDataCrlf,
-                ResponseFramingState::Trailers { .. } => ResponseFramingPhase::Trailers,
-                ResponseFramingState::CloseDelimited => ResponseFramingPhase::CloseDelimited,
-                ResponseFramingState::Complete => ResponseFramingPhase::Complete,
-                ResponseFramingState::Failed => ResponseFramingPhase::Failed,
-            }
-        }
-
-        pub fn status_code(&self) -> Option<u16> {
-            self.status_code
-        }
-
-        pub fn push(&mut self, input: &[u8]) -> Result<ResponseFramingProgress, AppError> {
-            if matches!(
-                self.state,
-                ResponseFramingState::Complete | ResponseFramingState::Failed
-            ) {
-                return self.fail("response framing is already terminal");
-            }
-
-            let mut cursor = 0;
-            while cursor < input.len() {
-                match &mut self.state {
-                    ResponseFramingState::Headers(headers) => {
-                        if let Err(error) =
-                            try_push_bounded(headers, input[cursor], self.max_header_bytes)
-                        {
-                            self.state = ResponseFramingState::Failed;
-                            return Err(error);
-                        }
-                        cursor += 1;
-                        if headers.ends_with(b"\r\n\r\n") {
-                            let headers = match std::mem::replace(
-                                &mut self.state,
-                                ResponseFramingState::Failed,
-                            ) {
-                                ResponseFramingState::Headers(headers) => headers,
-                                _ => unreachable!(),
-                            };
-                            let (status_code, body_framing) =
-                                parse_response_framing_headers(&headers, self.body_expectation)?;
-                            self.status_code = Some(status_code);
-                            self.state = match body_framing {
-                                ResponseBodyFraming::Interim => {
-                                    ResponseFramingState::Headers(Vec::new())
-                                }
-                                ResponseBodyFraming::None
-                                | ResponseBodyFraming::ContentLength(0) => {
-                                    ResponseFramingState::Complete
-                                }
-                                ResponseBodyFraming::ContentLength(remaining) => {
-                                    ResponseFramingState::ContentLength { remaining }
-                                }
-                                ResponseBodyFraming::Chunked => {
-                                    ResponseFramingState::ChunkSize { line: Vec::new() }
-                                }
-                                ResponseBodyFraming::CloseDelimited => {
-                                    ResponseFramingState::CloseDelimited
-                                }
-                            };
-                        }
-                    }
-                    ResponseFramingState::ContentLength { remaining } => {
-                        let consumed = (*remaining).min(input.len() - cursor);
-                        *remaining -= consumed;
-                        cursor += consumed;
-                        if *remaining == 0 {
-                            self.state = ResponseFramingState::Complete;
-                        }
-                    }
-                    ResponseFramingState::ChunkSize { line } => {
-                        if let Err(error) =
-                            try_push_bounded(line, input[cursor], self.max_line_bytes)
-                        {
-                            self.state = ResponseFramingState::Failed;
-                            return Err(error);
-                        }
-                        cursor += 1;
-                        if line.ends_with(b"\r\n") {
-                            let line = match std::mem::replace(
-                                &mut self.state,
-                                ResponseFramingState::Failed,
-                            ) {
-                                ResponseFramingState::ChunkSize { line } => line,
-                                _ => unreachable!(),
-                            };
-                            let size = parse_chunk_size(&line[..line.len() - 2])?;
-                            self.state = if size == 0 {
-                                ResponseFramingState::Trailers { line: Vec::new() }
-                            } else {
-                                ResponseFramingState::ChunkData { remaining: size }
-                            };
-                        }
-                    }
-                    ResponseFramingState::ChunkData { remaining } => {
-                        let consumed = (*remaining).min(input.len() - cursor);
-                        *remaining -= consumed;
-                        cursor += consumed;
-                        if *remaining == 0 {
-                            self.state = ResponseFramingState::ChunkDataCrlf { matched: 0 };
-                        }
-                    }
-                    ResponseFramingState::ChunkDataCrlf { matched } => {
-                        let expected = b"\r\n"[*matched];
-                        if input[cursor] != expected {
-                            return self.fail("chunk data is not followed by CRLF");
-                        }
-                        *matched += 1;
-                        cursor += 1;
-                        if *matched == 2 {
-                            self.state = ResponseFramingState::ChunkSize { line: Vec::new() };
-                        }
-                    }
-                    ResponseFramingState::Trailers { line } => {
-                        if let Err(error) =
-                            try_push_bounded(line, input[cursor], self.max_line_bytes)
-                        {
-                            self.state = ResponseFramingState::Failed;
-                            return Err(error);
-                        }
-                        cursor += 1;
-                        if line.ends_with(b"\r\n") {
-                            if line.len() == 2 {
-                                self.state = ResponseFramingState::Complete;
-                            } else if validate_trailer_line(&line[..line.len() - 2]).is_err() {
-                                return self.fail("malformed chunk trailer");
-                            } else {
-                                line.clear();
-                            }
-                        }
-                    }
-                    ResponseFramingState::CloseDelimited => {
-                        cursor = input.len();
-                    }
-                    ResponseFramingState::Complete | ResponseFramingState::Failed => break,
-                }
-            }
-
-            Ok(self.progress(cursor, input.len()))
-        }
-
-        pub fn finish_on_eof(&mut self) -> Result<ResponseFramingProgress, AppError> {
-            match self.state {
-                ResponseFramingState::CloseDelimited => {
-                    self.state = ResponseFramingState::Complete;
-                    Ok(self.progress(0, 0))
-                }
-                ResponseFramingState::Complete => Ok(self.progress(0, 0)),
-                ResponseFramingState::Failed => self.fail("response framing has failed"),
-                _ => self.fail("upstream closed before response framing completed"),
-            }
-        }
-
-        fn progress(&self, consumed: usize, input_len: usize) -> ResponseFramingProgress {
-            ResponseFramingProgress {
-                consumed,
-                input_len,
-                phase: self.phase(),
-                status_code: self.status_code,
-            }
-        }
-
-        fn fail<T>(&mut self, message: &'static str) -> Result<T, AppError> {
-            self.state = ResponseFramingState::Failed;
-            Err(AppError::new(ErrorCode::RuntimeUpstreamBadGateway, message))
-        }
-    }
-
-    fn try_push_bounded(bytes: &mut Vec<u8>, byte: u8, max_bytes: usize) -> Result<(), AppError> {
-        if bytes.len() >= max_bytes {
-            return Err(AppError::new(
-                ErrorCode::ResourcePayloadCapacityReached,
-                "response framing buffer limit reached",
-            ));
-        }
-        if bytes.len() == bytes.capacity() {
-            bytes.try_reserve(1).map_err(|_| {
-                AppError::new(
-                    ErrorCode::ResourceAllocationFailed,
-                    "response framing buffer allocation failed",
-                )
-            })?;
-        }
-        bytes.push(byte);
-        Ok(())
-    }
-
-    fn parse_response_framing_headers(
-        headers: &[u8],
-        body_expectation: ResponseBodyExpectation,
-    ) -> Result<(u16, ResponseBodyFraming), AppError> {
-        let header_text = std::str::from_utf8(headers)
-            .map_err(|_| malformed_upstream_response("response headers are not UTF-8"))?;
-        let header_text = header_text
-            .strip_suffix("\r\n\r\n")
-            .ok_or_else(|| malformed_upstream_response("response header terminator is missing"))?;
-        let mut lines = header_text.split("\r\n");
-        let status_line = lines
-            .next()
-            .ok_or_else(|| malformed_upstream_response("response status line is missing"))?;
-        let mut status_parts = status_line.split_whitespace();
-        let version = status_parts
-            .next()
-            .ok_or_else(|| malformed_upstream_response("response HTTP version is missing"))?;
-        if !version.starts_with("HTTP/") {
-            return Err(malformed_upstream_response(
-                "response HTTP version is invalid",
-            ));
-        }
-        let status_code = status_parts
-            .next()
-            .ok_or_else(|| malformed_upstream_response("response status code is missing"))?
-            .parse::<u16>()
-            .map_err(|_| malformed_upstream_response("response status code is invalid"))?;
-        if !(100..=999).contains(&status_code) {
-            return Err(malformed_upstream_response(
-                "response status code is outside the valid range",
-            ));
-        }
-
-        let mut content_length = None;
-        let mut transfer_encoding_present = false;
-        let mut transfer_encoding_chunked = false;
-        let mut chunked_coding_seen = false;
-        for line in lines {
-            let (name, value) = line
-                .split_once(':')
-                .ok_or_else(|| malformed_upstream_response("response header is malformed"))?;
-            if name.eq_ignore_ascii_case("Content-Length") {
-                if content_length.is_some() {
-                    return Err(malformed_upstream_response(
-                        "duplicate response content length",
-                    ));
-                }
-                content_length = Some(value.trim().parse::<usize>().map_err(|_| {
-                    malformed_upstream_response("response content length is invalid")
-                })?);
-            }
-            if name.eq_ignore_ascii_case("Transfer-Encoding") {
-                transfer_encoding_present = true;
-                for coding in value.split(',') {
-                    let coding = coding.trim();
-                    if coding.is_empty() {
-                        return Err(malformed_upstream_response(
-                            "response transfer encoding is empty",
-                        ));
-                    }
-                    transfer_encoding_chunked = coding.eq_ignore_ascii_case("chunked");
-                    chunked_coding_seen |= transfer_encoding_chunked;
-                }
-            }
-        }
-        if transfer_encoding_present && content_length.is_some() {
-            return Err(malformed_upstream_response(
-                "response transfer encoding conflicts with content length",
-            ));
-        }
-        if chunked_coding_seen && !transfer_encoding_chunked {
-            return Err(malformed_upstream_response(
-                "chunked must be the final response transfer coding",
-            ));
-        }
-        if (100..200).contains(&status_code) && status_code != 101 {
-            return Ok((status_code, ResponseBodyFraming::Interim));
-        }
-        if body_expectation == ResponseBodyExpectation::HeadResponse
-            || matches!(status_code, 101 | 204 | 304)
-        {
-            return Ok((status_code, ResponseBodyFraming::None));
-        }
-        let framing = if transfer_encoding_chunked {
-            ResponseBodyFraming::Chunked
-        } else if let Some(content_length) = content_length {
-            ResponseBodyFraming::ContentLength(content_length)
-        } else {
-            ResponseBodyFraming::CloseDelimited
-        };
-        Ok((status_code, framing))
-    }
-
-    fn parse_chunk_size(line: &[u8]) -> Result<usize, AppError> {
-        let line = std::str::from_utf8(line)
-            .map_err(|_| malformed_upstream_response("chunk size is not UTF-8"))?;
-        let size = line.split(';').next().unwrap_or("").trim();
-        if size.is_empty() {
-            return Err(malformed_upstream_response("chunk size is missing"));
-        }
-        usize::from_str_radix(size, 16)
-            .map_err(|_| malformed_upstream_response("chunk size is invalid"))
-    }
-
-    fn validate_trailer_line(line: &[u8]) -> Result<(), AppError> {
-        let line = std::str::from_utf8(line)
-            .map_err(|_| malformed_upstream_response("chunk trailer is not UTF-8"))?;
-        let (name, _) = line
-            .split_once(':')
-            .ok_or_else(|| malformed_upstream_response("chunk trailer is malformed"))?;
-        if name.trim().is_empty() {
-            return Err(malformed_upstream_response("chunk trailer name is empty"));
-        }
-        Ok(())
-    }
-
-    fn malformed_upstream_response(message: &'static str) -> AppError {
-        AppError::new(ErrorCode::RuntimeUpstreamBadGateway, message)
-    }
-
-    fn parse_response_status_code(bytes: &[u8]) -> Option<u16> {
-        let line_end = bytes.windows(2).position(|window| window == b"\r\n")?;
-        let status_line = std::str::from_utf8(&bytes[..line_end]).ok()?;
-        let mut parts = status_line.split_whitespace();
-        let version = parts.next()?;
-        if !version.starts_with("HTTP/") {
-            return None;
-        }
-        parts.next()?.parse::<u16>().ok()
     }
 
     fn runtime_error_log_for_status(status_code: u16) -> Option<(ErrorCode, &'static str)> {
@@ -7337,6 +6742,72 @@ pub mod snapshot_http {
         }
 
         #[test]
+        fn saturated_runtime_command_channel_rejects_without_losing_queued_command() {
+            let (mut client, receiver) = runtime_command_channel(1);
+            let (ack, _ack_receiver) = mpsc::channel();
+            client
+                .sender
+                .try_send(RuntimeCommandEnvelope {
+                    payload: RuntimeCommandPayload::Core(CoreCommand::RefreshRouteTable),
+                    ack,
+                })
+                .unwrap();
+
+            let acknowledgement = client.send(CoreCommand::Shutdown);
+            assert!(matches!(
+                acknowledgement,
+                CommandAck::Rejected(error) if error.code == ErrorCode::RuntimeCommandRejected
+            ));
+
+            let queued = receiver.receiver.try_recv().unwrap();
+            assert!(matches!(
+                queued.payload,
+                RuntimeCommandPayload::Core(CoreCommand::RefreshRouteTable)
+            ));
+        }
+
+        #[test]
+        fn closed_runtime_command_channel_returns_stable_rejection_without_enqueue() {
+            let (mut client, receiver) = runtime_command_channel(1);
+            drop(receiver);
+
+            let acknowledgement = client.send(CoreCommand::Shutdown);
+
+            assert!(matches!(
+                acknowledgement,
+                CommandAck::Rejected(error)
+                    if error.code == ErrorCode::RuntimeCommandRejected
+                        && error.message == "runtime command queue closed"
+            ));
+        }
+
+        #[test]
+        fn websocket_upgrade_response_requires_valid_http11_upgrade_handshake() {
+            for response in [
+                b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
+                    .as_slice(),
+                b"HTTP/1.1 101 Switching Protocols\r\nConnection: keep-alive, Upgrade\r\nUpgrade: WebSocket\r\n\r\n"
+                    .as_slice(),
+            ] {
+                assert!(websocket_response_is_switching_protocols(response));
+            }
+
+            for response in [
+                b"HTTP/1.1 101 Switching Protocols\r\n\r\n".as_slice(),
+                b"HTTP/1.1 101 Switching Protocols\r\nConnection: close\r\nUpgrade: websocket\r\n\r\n"
+                    .as_slice(),
+                b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
+                    .as_slice(),
+                b"HTTP/1.0 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
+                    .as_slice(),
+                b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: web\rSocket\r\n\r\n"
+                    .as_slice(),
+            ] {
+                assert!(!websocket_response_is_switching_protocols(response));
+            }
+        }
+
+        #[test]
         fn incremental_framing_completes_no_body_status_at_headers() {
             let mut framing = HttpResponseFraming::new(256, 64);
             let progress = framing
@@ -7346,6 +6817,67 @@ pub mod snapshot_http {
             assert_eq!(framing.phase(), ResponseFramingPhase::Complete);
             assert_eq!(progress.consumed, progress.input_len - b"unconsumed".len());
             assert_eq!(framing.status_code(), Some(204));
+        }
+
+        #[test]
+        fn incremental_framing_rejects_unsupported_response_versions() {
+            for response in [
+                b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n".as_slice(),
+                b"HTTP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".as_slice(),
+            ] {
+                let mut framing = HttpResponseFraming::new(256, 64);
+                let error = framing.push(response).unwrap_err();
+
+                assert_eq!(error.code, ErrorCode::RuntimeUpstreamBadGateway);
+                assert_eq!(framing.phase(), ResponseFramingPhase::Failed);
+            }
+        }
+
+        #[test]
+        fn incremental_framing_rejects_response_status_line_without_reason_separator() {
+            let mut framing = HttpResponseFraming::new(256, 64);
+
+            let error = framing
+                .push(b"HTTP/1.1 200\r\nContent-Length: 0\r\n\r\n")
+                .unwrap_err();
+
+            assert_eq!(error.code, ErrorCode::RuntimeUpstreamBadGateway);
+            assert_eq!(framing.phase(), ResponseFramingPhase::Failed);
+        }
+
+        #[test]
+        fn incremental_framing_rejects_non_token_response_header_name() {
+            for response in [
+                b"HTTP/1.1 200 OK\r\nBad Name: value\r\nContent-Length: 0\r\n\r\n".as_slice(),
+                b"HTTP/1.1 200 OK\r\nBad@Name: value\r\nContent-Length: 0\r\n\r\n".as_slice(),
+                b"HTTP/1.1 200 OK\r\nBad\x7fName: value\r\nContent-Length: 0\r\n\r\n".as_slice(),
+            ] {
+                let mut framing = HttpResponseFraming::new(256, 64);
+                let error = framing.push(response).unwrap_err();
+
+                assert_eq!(error.code, ErrorCode::RuntimeUpstreamBadGateway);
+                assert_eq!(framing.phase(), ResponseFramingPhase::Failed);
+            }
+        }
+
+        #[test]
+        fn incremental_framing_rejects_embedded_cr_or_lf_in_header_and_trailer_values() {
+            for response in [
+                b"HTTP/1.1 200 OK\r\nX-Trace: trusted\rInjected: true\r\nContent-Length: 0\r\n\r\n"
+                    .as_slice(),
+                b"HTTP/1.1 200 OK\r\nX-Trace: trusted\nInjected: true\r\nContent-Length: 0\r\n\r\n"
+                    .as_slice(),
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Trace: trusted\rInjected: true\r\n\r\n"
+                    .as_slice(),
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Trace: trusted\nInjected: true\r\n\r\n"
+                    .as_slice(),
+            ] {
+                let mut framing = HttpResponseFraming::new(256, 128);
+                let error = framing.push(response).unwrap_err();
+
+                assert_eq!(error.code, ErrorCode::RuntimeUpstreamBadGateway);
+                assert_eq!(framing.phase(), ResponseFramingPhase::Failed);
+            }
         }
 
         #[test]
@@ -7408,6 +6940,24 @@ pub mod snapshot_http {
 
             assert_eq!(framing.phase(), ResponseFramingPhase::Complete);
             assert_eq!(framing.status_code(), Some(200));
+        }
+
+        #[test]
+        fn incremental_framing_rejects_non_token_chunk_trailer_name() {
+            for response in [
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nBad Name: value\r\n\r\n"
+                    .as_slice(),
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nBad@Name: value\r\n\r\n"
+                    .as_slice(),
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nBad\x7fName: value\r\n\r\n"
+                    .as_slice(),
+            ] {
+                let mut framing = HttpResponseFraming::new(256, 64);
+                let error = framing.push(response).unwrap_err();
+
+                assert_eq!(error.code, ErrorCode::RuntimeUpstreamBadGateway);
+                assert_eq!(framing.phase(), ResponseFramingPhase::Failed);
+            }
         }
 
         #[test]
@@ -7489,1805 +7039,6 @@ pub mod snapshot_http {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TlsHandshakeState {
-    WaitingForClientHello,
-    SelectingCertificate,
-    Handshaking,
-    Established,
-    Failed(AppError),
-}
-
-impl TlsHandshakeState {
-    pub fn io_interest(&self) -> ConnectionInterest {
-        match self {
-            Self::WaitingForClientHello => ConnectionInterest {
-                client_readable: true,
-                ..ConnectionInterest::default()
-            },
-            Self::SelectingCertificate | Self::Established | Self::Failed(_) => {
-                ConnectionInterest::default()
-            }
-            Self::Handshaking => ConnectionInterest {
-                client_readable: true,
-                client_writable: true,
-                ..ConnectionInterest::default()
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertificateSelection {
-    pub server_name: String,
-    pub certificate_ref: CertificateRef,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TlsHandshakeEvent {
-    ClientHello { server_name: Option<String> },
-    HandshakeCompleted,
-    TimeoutExpired,
-    HandshakeFailed(AppError),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TlsHandshakeOutcome {
-    CertificateSelected(CertificateSelection),
-    StateChanged,
-}
-
-pub fn select_certificate_for_sni(
-    snapshot: &ConfigSnapshot,
-    server_name: &str,
-) -> Option<CertificateSelection> {
-    let route = snapshot.select_route(server_name, "/")?;
-    let certificate_ref = route.certificate_ref.clone()?;
-    Some(CertificateSelection {
-        server_name: server_name.to_ascii_lowercase(),
-        certificate_ref,
-    })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TlsHandshakeMachine {
-    state: TlsHandshakeState,
-    server_name: Option<String>,
-    certificate_ref: Option<CertificateRef>,
-}
-
-impl TlsHandshakeMachine {
-    pub fn new() -> Self {
-        Self {
-            state: TlsHandshakeState::WaitingForClientHello,
-            server_name: None,
-            certificate_ref: None,
-        }
-    }
-
-    pub fn state(&self) -> &TlsHandshakeState {
-        &self.state
-    }
-
-    pub fn server_name(&self) -> Option<&str> {
-        self.server_name.as_deref()
-    }
-
-    pub fn certificate_ref(&self) -> Option<&CertificateRef> {
-        self.certificate_ref.as_ref()
-    }
-
-    pub fn io_interest(&self) -> ConnectionInterest {
-        self.state.io_interest()
-    }
-
-    pub fn handle_event(
-        &mut self,
-        snapshot: &ConfigSnapshot,
-        event: TlsHandshakeEvent,
-    ) -> Result<TlsHandshakeOutcome, AppError> {
-        match event {
-            TlsHandshakeEvent::ClientHello { server_name } => self
-                .receive_client_hello(snapshot, server_name.as_deref())
-                .map(TlsHandshakeOutcome::CertificateSelected),
-            TlsHandshakeEvent::HandshakeCompleted => {
-                self.mark_established()?;
-                Ok(TlsHandshakeOutcome::StateChanged)
-            }
-            TlsHandshakeEvent::TimeoutExpired => self
-                .mark_timeout()
-                .map(|_| TlsHandshakeOutcome::StateChanged),
-            TlsHandshakeEvent::HandshakeFailed(error) => Err(self.fail(error)),
-        }
-    }
-
-    pub fn receive_client_hello(
-        &mut self,
-        snapshot: &ConfigSnapshot,
-        server_name: Option<&str>,
-    ) -> Result<CertificateSelection, AppError> {
-        if self.state != TlsHandshakeState::WaitingForClientHello {
-            return Err(self.fail(AppError::new(
-                ErrorCode::InternalBug,
-                "TLS client hello received in invalid state",
-            )));
-        }
-
-        self.state = TlsHandshakeState::SelectingCertificate;
-        let Some(server_name) = server_name.map(str::trim).filter(|value| !value.is_empty()) else {
-            return Err(self.fail(AppError::new(
-                ErrorCode::CertificateNotFound,
-                "TLS client hello did not include SNI",
-            )));
-        };
-        let Some(selection) = select_certificate_for_sni(snapshot, server_name) else {
-            return Err(self.fail(AppError::new(
-                ErrorCode::CertificateNotFound,
-                format!("no certificate matches SNI: {server_name}"),
-            )));
-        };
-
-        self.server_name = Some(selection.server_name.clone());
-        self.certificate_ref = Some(selection.certificate_ref.clone());
-        self.state = TlsHandshakeState::Handshaking;
-        Ok(selection)
-    }
-
-    pub fn mark_established(&mut self) -> Result<(), AppError> {
-        if self.state != TlsHandshakeState::Handshaking {
-            return Err(self.fail(AppError::new(
-                ErrorCode::InternalBug,
-                "TLS established in invalid state",
-            )));
-        }
-        self.state = TlsHandshakeState::Established;
-        Ok(())
-    }
-
-    pub fn mark_timeout(&mut self) -> Result<(), AppError> {
-        Err(self.fail(AppError::new(
-            ErrorCode::TlsHandshakeTimeout,
-            "TLS handshake timed out",
-        )))
-    }
-
-    fn fail(&mut self, error: AppError) -> AppError {
-        self.state = TlsHandshakeState::Failed(error.clone());
-        error
-    }
-}
-
-impl Default for TlsHandshakeMachine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TlsTransportState {
-    Handshaking,
-    Established,
-    Closing,
-    PeerClosed,
-    Failed(AppError),
-}
-
-pub struct TlsTransport {
-    state: TlsTransportState,
-    session: Box<dyn TlsSession + Send>,
-}
-
-impl TlsTransport {
-    pub fn new(session: Box<dyn TlsSession + Send>) -> Self {
-        let state = Self::state_from_progress(session.progress());
-        Self { state, session }
-    }
-
-    pub fn state(&self) -> &TlsTransportState {
-        &self.state
-    }
-
-    pub fn sni_hostname(&self) -> Option<&str> {
-        self.session.sni_hostname()
-    }
-
-    pub fn pending_tls_bytes(&self) -> TlsPendingBytes {
-        self.session.pending_bytes()
-    }
-
-    pub fn io_interest(&self) -> ConnectionInterest {
-        if self.is_terminal() {
-            return ConnectionInterest::default();
-        }
-        let interest = self.session.interest();
-        ConnectionInterest {
-            client_readable: interest.wants_read,
-            client_writable: interest.wants_write,
-            ..ConnectionInterest::default()
-        }
-    }
-
-    pub fn receive_encrypted(&mut self, bytes: &[u8]) -> Result<usize, AppError> {
-        if self.is_terminal() {
-            return Ok(0);
-        }
-        let consumed = self.session.receive_encrypted(bytes).inspect_err(|error| {
-            self.state = TlsTransportState::Failed(error.clone());
-        })?;
-        self.sync_state();
-        Ok(consumed)
-    }
-
-    pub fn take_decrypted(&mut self, max_bytes: usize) -> Vec<u8> {
-        if self.is_terminal() {
-            return Vec::new();
-        }
-        self.session.take_decrypted(max_bytes)
-    }
-
-    pub fn receive_plaintext(&mut self, bytes: &[u8]) -> Result<usize, AppError> {
-        if self.is_terminal() {
-            return Ok(0);
-        }
-        let consumed = self.session.receive_plaintext(bytes).inspect_err(|error| {
-            self.state = TlsTransportState::Failed(error.clone());
-        })?;
-        self.sync_state();
-        Ok(consumed)
-    }
-
-    pub fn take_encrypted(&mut self, max_bytes: usize) -> Vec<u8> {
-        let drained = self.session.take_encrypted(max_bytes);
-        self.sync_state();
-        drained
-    }
-
-    pub fn request_close_notify(&mut self) -> Result<(), AppError> {
-        if self.is_terminal() {
-            return Ok(());
-        }
-        self.session.request_close_notify().inspect_err(|error| {
-            self.state = TlsTransportState::Failed(error.clone());
-        })?;
-        self.sync_state();
-        Ok(())
-    }
-
-    pub fn mark_handshake_timeout(&mut self) -> Result<(), AppError> {
-        if self.state != TlsTransportState::Handshaking {
-            return Ok(());
-        }
-        let error = AppError::new(
-            ErrorCode::TlsHandshakeTimeout,
-            "TLS transport handshake timed out",
-        );
-        self.state = TlsTransportState::Failed(error.clone());
-        Err(error)
-    }
-
-    fn is_terminal(&self) -> bool {
-        matches!(
-            self.state,
-            TlsTransportState::PeerClosed | TlsTransportState::Failed(_)
-        )
-    }
-
-    fn sync_state(&mut self) {
-        self.state = Self::state_from_progress(self.session.progress());
-    }
-
-    fn state_from_progress(progress: TlsSessionProgress) -> TlsTransportState {
-        match progress {
-            TlsSessionProgress::Handshaking => TlsTransportState::Handshaking,
-            TlsSessionProgress::Established => TlsTransportState::Established,
-            TlsSessionProgress::Closing => TlsTransportState::Closing,
-            TlsSessionProgress::PeerClosed => TlsTransportState::PeerClosed,
-            TlsSessionProgress::Failed { code } => TlsTransportState::Failed(AppError::new(
-                code,
-                "TLS session reported a terminal failure",
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct PlaintextClientTransport {
-    socket_output: Vec<u8>,
-}
-
-pub enum ClientTransport {
-    Plaintext(PlaintextClientTransport),
-    Tls(TlsTransport),
-}
-
-impl ClientTransport {
-    pub fn plaintext() -> Self {
-        Self::Plaintext(PlaintextClientTransport::default())
-    }
-
-    pub fn tls(session: Box<dyn TlsSession + Send>) -> Self {
-        Self::Tls(TlsTransport::new(session))
-    }
-
-    pub fn forwarded_scheme(&self) -> &'static str {
-        match self {
-            Self::Plaintext(_) => "http",
-            Self::Tls(_) => "https",
-        }
-    }
-
-    pub fn pending_tls_bytes(&self) -> TlsPendingBytes {
-        match self {
-            Self::Plaintext(_) => TlsPendingBytes::default(),
-            Self::Tls(transport) => transport.pending_tls_bytes(),
-        }
-    }
-
-    pub const fn is_tls(&self) -> bool {
-        matches!(self, Self::Tls(_))
-    }
-
-    pub fn request_close_notify(&mut self) -> Result<bool, AppError> {
-        match self {
-            Self::Plaintext(_) => Ok(false),
-            Self::Tls(transport) => {
-                transport.request_close_notify()?;
-                Ok(true)
-            }
-        }
-    }
-
-    pub fn mark_handshake_timeout_if_pending(&mut self) -> Option<AppError> {
-        match self {
-            Self::Tls(transport) if transport.state() == &TlsTransportState::Handshaking => {
-                transport.mark_handshake_timeout().err()
-            }
-            Self::Plaintext(_) | Self::Tls(_) => None,
-        }
-    }
-
-    pub fn receive_socket_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>, AppError> {
-        match self {
-            Self::Plaintext(_) => Ok(bytes.to_vec()),
-            Self::Tls(transport) => {
-                transport.receive_encrypted(bytes)?;
-                Ok(transport.take_decrypted(usize::MAX))
-            }
-        }
-    }
-
-    pub fn queue_http_bytes(&mut self, bytes: &[u8]) -> Result<usize, AppError> {
-        match self {
-            Self::Plaintext(transport) => {
-                transport.socket_output.extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            Self::Tls(transport) => transport.receive_plaintext(bytes),
-        }
-    }
-
-    pub fn take_socket_bytes(&mut self, max_bytes: usize) -> Vec<u8> {
-        match self {
-            Self::Plaintext(transport) => {
-                let drain = transport.socket_output.len().min(max_bytes);
-                transport.socket_output.drain(..drain).collect()
-            }
-            Self::Tls(transport) => transport.take_encrypted(max_bytes),
-        }
-    }
-
-    pub fn merge_interest(&self, base: ConnectionInterest) -> ConnectionInterest {
-        let Self::Tls(transport) = self else {
-            return base;
-        };
-        let tls = transport.io_interest();
-        let (client_readable, client_writable) = match transport.state() {
-            TlsTransportState::Handshaking | TlsTransportState::Closing => {
-                (tls.client_readable, tls.client_writable)
-            }
-            TlsTransportState::Established => (
-                base.client_readable || tls.client_readable,
-                base.client_writable || tls.client_writable,
-            ),
-            TlsTransportState::PeerClosed | TlsTransportState::Failed(_) => (false, false),
-        };
-        ConnectionInterest {
-            client_readable,
-            client_writable,
-            upstream_readable: base.upstream_readable,
-            upstream_writable: base.upstream_writable,
-        }
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct PreparedClientTlsRegistry {
-    factories: BTreeMap<
-        (ServiceId, UpstreamId),
-        std::sync::Arc<dyn ClientTlsSessionFactory + Send + Sync>,
-    >,
-}
-
-impl PreparedClientTlsRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn insert<F>(
-        &mut self,
-        service_id: ServiceId,
-        upstream_id: UpstreamId,
-        factory: F,
-    ) -> Result<(), AppError>
-    where
-        F: ClientTlsSessionFactory + Send + Sync + 'static,
-    {
-        self.insert_shared(service_id, upstream_id, std::sync::Arc::new(factory))
-    }
-
-    pub fn insert_shared(
-        &mut self,
-        service_id: ServiceId,
-        upstream_id: UpstreamId,
-        factory: std::sync::Arc<dyn ClientTlsSessionFactory + Send + Sync>,
-    ) -> Result<(), AppError> {
-        let key = (service_id, upstream_id);
-        if self.factories.contains_key(&key) {
-            return Err(upstream_tls_registry_error());
-        }
-        self.factories.insert(key, factory);
-        Ok(())
-    }
-
-    pub fn create_session(
-        &self,
-        service_id: &ServiceId,
-        upstream_id: &UpstreamId,
-        server_name: &TlsServerName,
-    ) -> Result<Box<dyn TlsSession + Send>, AppError> {
-        self.factories
-            .get(&(service_id.clone(), upstream_id.clone()))
-            .ok_or_else(upstream_tls_registry_error)?
-            .create_client_session(server_name)
-    }
-
-    pub fn contains(&self, service_id: &ServiceId, upstream_id: &UpstreamId) -> bool {
-        self.factories
-            .contains_key(&(service_id.clone(), upstream_id.clone()))
-    }
-
-    pub fn len(&self) -> usize {
-        self.factories.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.factories.is_empty()
-    }
-
-    fn validate_for_snapshot(&self, snapshot: &ConfigSnapshot) -> Result<(), AppError> {
-        let mut expected = 0_usize;
-        for service in &snapshot.services {
-            for upstream in &service.upstreams {
-                if matches!(upstream.tls, UpstreamTlsPolicy::ServerAuthenticated { .. }) {
-                    expected = expected.saturating_add(1);
-                    if !self.contains(&service.id, &upstream.id) {
-                        return Err(upstream_tls_registry_error());
-                    }
-                }
-            }
-        }
-        if self.len() != expected {
-            return Err(upstream_tls_registry_error());
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct PreparedServerTlsRegistry {
-    factories: BTreeMap<SocketAddr, std::sync::Arc<dyn ServerTlsSessionFactory + Send + Sync>>,
-}
-
-impl PreparedServerTlsRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn insert<F>(&mut self, bind: SocketAddr, factory: F) -> Result<(), AppError>
-    where
-        F: ServerTlsSessionFactory + Send + Sync + 'static,
-    {
-        if self.factories.contains_key(&bind) {
-            return Err(runtime_generation_error());
-        }
-        self.factories.insert(bind, std::sync::Arc::new(factory));
-        Ok(())
-    }
-
-    fn factory_for(
-        &self,
-        bind: &SocketAddr,
-    ) -> Option<std::sync::Arc<dyn ServerTlsSessionFactory + Send + Sync>> {
-        self.factories.get(bind).cloned()
-    }
-
-    pub fn len(&self) -> usize {
-        self.factories.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.factories.is_empty()
-    }
-}
-
-fn upstream_tls_registry_error() -> AppError {
-    AppError::new(
-        ErrorCode::UpstreamTlsProfileInvalid,
-        "prepared upstream TLS profile is invalid",
-    )
-}
-
-fn runtime_generation_error() -> AppError {
-    AppError::new(
-        ErrorCode::RuntimeCommandRejected,
-        "prepared TLS runtime generation does not match the active snapshot",
-    )
-}
-
-#[derive(Debug, Default)]
-pub struct PlaintextUpstreamTransport {
-    socket_output: Vec<u8>,
-}
-
-pub enum UpstreamTransport {
-    Plaintext(PlaintextUpstreamTransport),
-    Tls(TlsTransport),
-}
-
-impl UpstreamTransport {
-    pub fn plaintext() -> Self {
-        Self::Plaintext(PlaintextUpstreamTransport::default())
-    }
-
-    pub fn tls(session: Box<dyn TlsSession + Send>) -> Self {
-        Self::Tls(TlsTransport::new(session))
-    }
-
-    pub fn tls_state(&self) -> Option<&TlsTransportState> {
-        match self {
-            Self::Plaintext(_) => None,
-            Self::Tls(transport) => Some(transport.state()),
-        }
-    }
-
-    pub fn pending_tls_bytes(&self) -> TlsPendingBytes {
-        match self {
-            Self::Plaintext(_) => TlsPendingBytes::default(),
-            Self::Tls(transport) => transport.pending_tls_bytes(),
-        }
-    }
-
-    pub const fn is_tls(&self) -> bool {
-        matches!(self, Self::Tls(_))
-    }
-
-    pub fn receive_socket_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>, AppError> {
-        match self {
-            Self::Plaintext(_) => Ok(bytes.to_vec()),
-            Self::Tls(transport) => {
-                transport.receive_encrypted(bytes)?;
-                Ok(transport.take_decrypted(usize::MAX))
-            }
-        }
-    }
-
-    pub fn queue_http_bytes(&mut self, bytes: &[u8]) -> Result<usize, AppError> {
-        match self {
-            Self::Plaintext(transport) => {
-                transport.socket_output.extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            Self::Tls(transport) if transport.state() == &TlsTransportState::Established => {
-                transport.receive_plaintext(bytes)
-            }
-            Self::Tls(_) => Ok(0),
-        }
-    }
-
-    pub fn queue_tunnel_plaintext(
-        &mut self,
-        plaintext: &[u8],
-        output: &mut WriteBuffer,
-    ) -> Result<usize, AppError> {
-        if !output.is_complete() {
-            return Ok(0);
-        }
-        match self {
-            Self::Plaintext(_) => {
-                output.try_replace_if_complete(plaintext)?;
-                Ok(plaintext.len())
-            }
-            Self::Tls(transport) if transport.state() == &TlsTransportState::Established => {
-                let consumed = transport.receive_plaintext(plaintext)?;
-                let socket_bytes = transport.take_encrypted(usize::MAX);
-                output.try_replace_if_complete(&socket_bytes)?;
-                Ok(consumed)
-            }
-            Self::Tls(_) => Ok(0),
-        }
-    }
-
-    pub fn take_socket_bytes(&mut self, max_bytes: usize) -> Vec<u8> {
-        match self {
-            Self::Plaintext(transport) => {
-                let drain = transport.socket_output.len().min(max_bytes);
-                transport.socket_output.drain(..drain).collect()
-            }
-            Self::Tls(transport) => transport.take_encrypted(max_bytes),
-        }
-    }
-
-    pub fn merge_interest(&self, base: ConnectionInterest) -> ConnectionInterest {
-        let Self::Tls(transport) = self else {
-            return base;
-        };
-        let tls = transport.io_interest();
-        let (upstream_readable, upstream_writable) = match transport.state() {
-            TlsTransportState::Handshaking | TlsTransportState::Closing => {
-                (tls.client_readable, tls.client_writable)
-            }
-            TlsTransportState::Established => (
-                base.upstream_readable || tls.client_readable,
-                base.upstream_writable || tls.client_writable,
-            ),
-            TlsTransportState::PeerClosed | TlsTransportState::Failed(_) => (false, false),
-        };
-        ConnectionInterest {
-            client_readable: base.client_readable,
-            client_writable: base.client_writable,
-            upstream_readable,
-            upstream_writable,
-        }
-    }
-
-    pub fn mark_handshake_timeout_if_pending(&mut self) -> Option<AppError> {
-        match self {
-            Self::Tls(transport) if transport.state() == &TlsTransportState::Handshaking => {
-                transport.mark_handshake_timeout().err()
-            }
-            Self::Plaintext(_) | Self::Tls(_) => None,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct PendingSocketOutput {
-    buffer: WriteBuffer,
-}
-
-impl PendingSocketOutput {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn pull_from(&mut self, transport: &mut ClientTransport, max_bytes: usize) -> usize {
-        if !self.is_empty() {
-            return 0;
-        }
-        let bytes = transport.take_socket_bytes(max_bytes);
-        let pulled = bytes.len();
-        self.buffer = WriteBuffer::new(bytes);
-        pulled
-    }
-
-    pub fn pull_tunnel_plaintext(
-        &mut self,
-        transport: &mut ClientTransport,
-        plaintext: &[u8],
-    ) -> Result<usize, AppError> {
-        if !self.is_empty() {
-            return Ok(0);
-        }
-        match transport {
-            ClientTransport::Plaintext(_) => {
-                self.buffer.try_replace_if_complete(plaintext)?;
-                Ok(plaintext.len())
-            }
-            ClientTransport::Tls(transport) => {
-                let consumed = transport.receive_plaintext(plaintext)?;
-                let socket_bytes = transport.take_encrypted(usize::MAX);
-                self.buffer.try_replace_if_complete(&socket_bytes)?;
-                Ok(consumed)
-            }
-        }
-    }
-
-    pub fn remaining(&self) -> &[u8] {
-        self.buffer.remaining()
-    }
-
-    pub fn remaining_len(&self) -> usize {
-        self.buffer.remaining_len()
-    }
-
-    pub fn advance(&mut self, byte_count: usize) -> usize {
-        let advanced = self.buffer.advance(byte_count);
-        self.buffer.clear_if_complete();
-        advanced
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.buffer.is_complete()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConnectionToken(Token);
-
-impl ConnectionToken {
-    pub fn new(value: usize) -> Self {
-        Self(Token(value))
-    }
-
-    pub fn as_usize(&self) -> usize {
-        self.0 .0
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct TokenAllocator {
-    next: usize,
-    recycled: Vec<usize>,
-}
-
-impl TokenAllocator {
-    pub fn allocate(&mut self) -> ConnectionToken {
-        if let Some(value) = self.recycled.pop() {
-            ConnectionToken::new(value)
-        } else {
-            let token = ConnectionToken::new(self.next);
-            self.next += 1;
-            token
-        }
-    }
-
-    pub fn release(&mut self, token: ConnectionToken) {
-        self.recycled.push(token.as_usize());
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConnectionState {
-    Accepted,
-    ReadingClientRequest,
-    SelectingRoute,
-    ConnectingUpstream,
-    HandshakingUpstreamTls,
-    WritingUpstreamRequest,
-    ReadingUpstreamResponse,
-    WritingClientResponse,
-    TunnelingWebSocket,
-    Draining,
-    Closed,
-    Failed,
-}
-
-impl ConnectionState {
-    pub fn can_transition_to(&self, next: &Self) -> bool {
-        use ConnectionState::*;
-        matches!(
-            (self, next),
-            (Accepted, ReadingClientRequest)
-                | (Accepted, WritingClientResponse)
-                | (ReadingClientRequest, SelectingRoute)
-                | (ReadingClientRequest, WritingClientResponse)
-                | (SelectingRoute, ConnectingUpstream)
-                | (SelectingRoute, WritingClientResponse)
-                | (ConnectingUpstream, WritingUpstreamRequest)
-                | (ConnectingUpstream, HandshakingUpstreamTls)
-                | (HandshakingUpstreamTls, WritingUpstreamRequest)
-                | (HandshakingUpstreamTls, WritingClientResponse)
-                | (ConnectingUpstream, WritingClientResponse)
-                | (WritingUpstreamRequest, ReadingUpstreamResponse)
-                | (WritingUpstreamRequest, WritingClientResponse)
-                | (ReadingUpstreamResponse, WritingClientResponse)
-                | (ReadingUpstreamResponse, TunnelingWebSocket)
-                | (WritingClientResponse, Draining)
-                | (TunnelingWebSocket, Draining)
-                | (_, Closed)
-                | (_, Failed)
-        )
-    }
-
-    pub fn io_interest(&self) -> ConnectionInterest {
-        match self {
-            Self::Accepted | Self::ReadingClientRequest => ConnectionInterest {
-                client_readable: true,
-                ..ConnectionInterest::default()
-            },
-            Self::SelectingRoute | Self::Draining | Self::Closed | Self::Failed => {
-                ConnectionInterest::default()
-            }
-            Self::ConnectingUpstream | Self::WritingUpstreamRequest => ConnectionInterest {
-                upstream_writable: true,
-                ..ConnectionInterest::default()
-            },
-            Self::HandshakingUpstreamTls => ConnectionInterest {
-                upstream_readable: true,
-                upstream_writable: true,
-                ..ConnectionInterest::default()
-            },
-            Self::ReadingUpstreamResponse => ConnectionInterest {
-                upstream_readable: true,
-                ..ConnectionInterest::default()
-            },
-            Self::WritingClientResponse => ConnectionInterest {
-                client_writable: true,
-                ..ConnectionInterest::default()
-            },
-            Self::TunnelingWebSocket => ConnectionInterest {
-                client_readable: true,
-                upstream_readable: true,
-                ..ConnectionInterest::default()
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ConnectionInterest {
-    pub client_readable: bool,
-    pub client_writable: bool,
-    pub upstream_readable: bool,
-    pub upstream_writable: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RouteSelectionTarget {
-    Proxy,
-    ImmediateResponse,
-    WebSocketTunnel,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionEvent {
-    ClientReadable,
-    ClientWritable,
-    UpstreamConnectReady,
-    UpstreamTlsHandshakeStarted,
-    UpstreamTlsEstablished,
-    UpstreamReadable,
-    UpstreamWritable,
-    RequestParsed,
-    RouteSelected(RouteSelectionTarget),
-    TimeoutExpired,
-    ClientClosed,
-    UpstreamClosed,
-    CommandShutdown,
-    IoError,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionTimeoutKind {
-    ClientIdle,
-    UpstreamConnect,
-    UpstreamTlsHandshake,
-    UpstreamRead,
-    ClientWrite,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConnectionTimeoutDecision {
-    pub kind: ConnectionTimeoutKind,
-    pub status_code: Option<u16>,
-    pub reason: &'static str,
-    pub next_state: ConnectionState,
-}
-
-pub fn timeout_decision_for_state(state: &ConnectionState) -> Option<ConnectionTimeoutDecision> {
-    match state {
-        ConnectionState::Accepted | ConnectionState::ReadingClientRequest => {
-            Some(ConnectionTimeoutDecision {
-                kind: ConnectionTimeoutKind::ClientIdle,
-                status_code: Some(408),
-                reason: "Request Timeout",
-                next_state: ConnectionState::WritingClientResponse,
-            })
-        }
-        ConnectionState::ConnectingUpstream => Some(ConnectionTimeoutDecision {
-            kind: ConnectionTimeoutKind::UpstreamConnect,
-            status_code: Some(504),
-            reason: "Gateway Timeout",
-            next_state: ConnectionState::WritingClientResponse,
-        }),
-        ConnectionState::HandshakingUpstreamTls => Some(ConnectionTimeoutDecision {
-            kind: ConnectionTimeoutKind::UpstreamTlsHandshake,
-            status_code: Some(504),
-            reason: "Gateway Timeout",
-            next_state: ConnectionState::WritingClientResponse,
-        }),
-        ConnectionState::WritingUpstreamRequest | ConnectionState::ReadingUpstreamResponse => {
-            Some(ConnectionTimeoutDecision {
-                kind: ConnectionTimeoutKind::UpstreamRead,
-                status_code: Some(504),
-                reason: "Gateway Timeout",
-                next_state: ConnectionState::WritingClientResponse,
-            })
-        }
-        ConnectionState::WritingClientResponse => Some(ConnectionTimeoutDecision {
-            kind: ConnectionTimeoutKind::ClientWrite,
-            status_code: None,
-            reason: "Client Write Timeout",
-            next_state: ConnectionState::Failed,
-        }),
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum UpstreamAttemptPhase {
-    #[default]
-    NotStarted,
-    Writing,
-    AwaitingResponse,
-    ResponseStarted,
-    Terminal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpstreamAttemptFailure {
-    Connect,
-    ConnectTimeout,
-    TlsHandshake,
-    TlsHandshakeTimeout,
-    Write,
-    Read,
-    ReadTimeout,
-    ResetBeforeResponse,
-    ResetAfterResponse,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpstreamAttemptTerminal {
-    Succeeded,
-    Failed(UpstreamAttemptFailure),
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct UpstreamAttemptProgress {
-    phase: UpstreamAttemptPhase,
-    request_bytes_written: u64,
-    response_started: bool,
-    terminal: Option<UpstreamAttemptTerminal>,
-}
-
-impl UpstreamAttemptProgress {
-    pub fn begin(&mut self) -> Result<(), AppError> {
-        self.require_phase(UpstreamAttemptPhase::NotStarted)?;
-        self.phase = UpstreamAttemptPhase::Writing;
-        Ok(())
-    }
-
-    pub fn record_request_write(&mut self, byte_count: u64) -> Result<(), AppError> {
-        self.require_phase(UpstreamAttemptPhase::Writing)?;
-        self.request_bytes_written = self.request_bytes_written.saturating_add(byte_count);
-        Ok(())
-    }
-
-    pub fn request_write_completed(&mut self) -> Result<(), AppError> {
-        self.require_phase(UpstreamAttemptPhase::Writing)?;
-        self.phase = UpstreamAttemptPhase::AwaitingResponse;
-        Ok(())
-    }
-
-    pub fn record_response_bytes(&mut self, byte_count: usize) -> Result<(), AppError> {
-        if !matches!(
-            self.phase,
-            UpstreamAttemptPhase::AwaitingResponse | UpstreamAttemptPhase::ResponseStarted
-        ) {
-            return Err(invalid_upstream_attempt_transition());
-        }
-        if byte_count > 0 {
-            self.response_started = true;
-            self.phase = UpstreamAttemptPhase::ResponseStarted;
-        }
-        Ok(())
-    }
-
-    pub fn succeed(&mut self) -> Result<(), AppError> {
-        if !matches!(
-            self.phase,
-            UpstreamAttemptPhase::AwaitingResponse | UpstreamAttemptPhase::ResponseStarted
-        ) {
-            return Err(invalid_upstream_attempt_transition());
-        }
-        self.complete(UpstreamAttemptTerminal::Succeeded)
-    }
-
-    pub fn fail(&mut self, failure: UpstreamAttemptFailure) -> Result<(), AppError> {
-        if self.phase == UpstreamAttemptPhase::Terminal {
-            return Err(invalid_upstream_attempt_transition());
-        }
-        self.complete(UpstreamAttemptTerminal::Failed(failure))
-    }
-
-    pub fn phase(&self) -> UpstreamAttemptPhase {
-        self.phase
-    }
-
-    pub fn request_bytes_written(&self) -> u64 {
-        self.request_bytes_written
-    }
-
-    pub fn response_started(&self) -> bool {
-        self.response_started
-    }
-
-    pub fn terminal(&self) -> Option<UpstreamAttemptTerminal> {
-        self.terminal
-    }
-
-    fn require_phase(&self, expected: UpstreamAttemptPhase) -> Result<(), AppError> {
-        if self.phase != expected {
-            return Err(invalid_upstream_attempt_transition());
-        }
-        Ok(())
-    }
-
-    fn complete(&mut self, terminal: UpstreamAttemptTerminal) -> Result<(), AppError> {
-        if self.terminal.is_some() {
-            return Err(invalid_upstream_attempt_transition());
-        }
-        self.terminal = Some(terminal);
-        self.phase = UpstreamAttemptPhase::Terminal;
-        Ok(())
-    }
-}
-
-fn invalid_upstream_attempt_transition() -> AppError {
-    AppError::new(
-        ErrorCode::RuntimeCommandRejected,
-        "invalid upstream attempt transition",
-    )
-}
-
-fn upstream_failure_response_spec(failure: UpstreamAttemptFailure) -> (u16, &'static str) {
-    match failure {
-        UpstreamAttemptFailure::Connect
-        | UpstreamAttemptFailure::TlsHandshake
-        | UpstreamAttemptFailure::Write
-        | UpstreamAttemptFailure::Read
-        | UpstreamAttemptFailure::ResetBeforeResponse
-        | UpstreamAttemptFailure::ResetAfterResponse => (502, "Bad Gateway"),
-        UpstreamAttemptFailure::ConnectTimeout
-        | UpstreamAttemptFailure::TlsHandshakeTimeout
-        | UpstreamAttemptFailure::ReadTimeout => (504, "Gateway Timeout"),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Connection {
-    pub token: ConnectionToken,
-    pub state: ConnectionState,
-}
-
-impl Connection {
-    pub fn transition_to(&mut self, next: ConnectionState) -> Result<(), AppError> {
-        if !self.state.can_transition_to(&next) {
-            return Err(AppError::new(
-                ErrorCode::RuntimeCommandRejected,
-                "invalid connection state transition",
-            ));
-        }
-        self.state = next;
-        Ok(())
-    }
-
-    pub fn handle_event(&mut self, event: ConnectionEvent) -> Result<(), AppError> {
-        use ConnectionEvent::*;
-        use ConnectionState::*;
-        use RouteSelectionTarget::*;
-
-        if event == TimeoutExpired {
-            return self.handle_timeout().map(|_| ()).ok_or_else(|| {
-                AppError::new(
-                    ErrorCode::RuntimeCommandRejected,
-                    "no timeout policy for current connection state",
-                )
-            });
-        }
-
-        let next = match (&self.state, event) {
-            (_, IoError) => Failed,
-            (_, ClientClosed | CommandShutdown) => Closed,
-            (Accepted, ClientReadable) => ReadingClientRequest,
-            (ReadingClientRequest, RequestParsed) => SelectingRoute,
-            (SelectingRoute, RouteSelected(Proxy)) => ConnectingUpstream,
-            (SelectingRoute, RouteSelected(ImmediateResponse)) => WritingClientResponse,
-            (ConnectingUpstream, UpstreamConnectReady) => WritingUpstreamRequest,
-            (ConnectingUpstream, UpstreamTlsHandshakeStarted) => HandshakingUpstreamTls,
-            (HandshakingUpstreamTls, UpstreamTlsEstablished) => WritingUpstreamRequest,
-            (WritingUpstreamRequest, UpstreamWritable) => ReadingUpstreamResponse,
-            (ReadingUpstreamResponse, UpstreamReadable) => WritingClientResponse,
-            (ReadingUpstreamResponse, RouteSelected(WebSocketTunnel)) => TunnelingWebSocket,
-            (WritingClientResponse, ClientWritable) => Draining,
-            (Draining, UpstreamClosed) => Closed,
-            _ => {
-                return Err(AppError::new(
-                    ErrorCode::RuntimeCommandRejected,
-                    "event is not valid for current connection state",
-                ));
-            }
-        };
-
-        self.transition_to(next)
-    }
-
-    pub fn handle_timeout(&mut self) -> Option<ConnectionTimeoutDecision> {
-        let decision = timeout_decision_for_state(&self.state)?;
-        self.state = decision.next_state.clone();
-        Some(decision)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HttpConnectionIo {
-    pub connection: Connection,
-    upstream_attempt: UpstreamAttemptProgress,
-    client_request: ClientRequestBuffer,
-    upstream_write: WriteBuffer,
-    client_write: WriteBuffer,
-}
-
-impl HttpConnectionIo {
-    pub fn new(token: ConnectionToken) -> Self {
-        Self {
-            connection: Connection {
-                token,
-                state: ConnectionState::Accepted,
-            },
-            upstream_attempt: UpstreamAttemptProgress::default(),
-            client_request: ClientRequestBuffer::default(),
-            upstream_write: WriteBuffer::default(),
-            client_write: WriteBuffer::default(),
-        }
-    }
-
-    pub fn receive_client_bytes(
-        &mut self,
-        chunk: &[u8],
-        limits: &HttpLimits,
-    ) -> Result<RequestReadOutcome, AppError> {
-        if self.connection.state == ConnectionState::Accepted {
-            self.connection
-                .handle_event(ConnectionEvent::ClientReadable)?;
-        }
-        if self.connection.state != ConnectionState::ReadingClientRequest {
-            return Err(invalid_connection_io_state());
-        }
-
-        let outcome = self.client_request.push(chunk, limits)?;
-        if let RequestReadOutcome::Complete(bytes) = &outcome {
-            parse_http_request(bytes, limits)?;
-            self.connection
-                .handle_event(ConnectionEvent::RequestParsed)?;
-        }
-        Ok(outcome)
-    }
-
-    pub fn begin_upstream_connect(&mut self) -> Result<(), AppError> {
-        self.connection
-            .handle_event(ConnectionEvent::RouteSelected(RouteSelectionTarget::Proxy))?;
-        self.upstream_attempt.begin()
-    }
-
-    pub fn upstream_connected(&mut self, upstream_request: Vec<u8>) -> Result<(), AppError> {
-        let event = match self.connection.state {
-            ConnectionState::ConnectingUpstream => ConnectionEvent::UpstreamConnectReady,
-            ConnectionState::HandshakingUpstreamTls => ConnectionEvent::UpstreamTlsEstablished,
-            _ => return Err(invalid_connection_io_state()),
-        };
-        self.upstream_write = WriteBuffer::new(upstream_request);
-        self.connection.handle_event(event)
-    }
-
-    pub fn advance_upstream_write(&mut self, byte_count: usize) -> Result<usize, AppError> {
-        if self.connection.state != ConnectionState::WritingUpstreamRequest {
-            return Err(invalid_connection_io_state());
-        }
-        let advanced = self.upstream_write.advance(byte_count);
-        self.upstream_attempt
-            .record_request_write(advanced as u64)?;
-        if self.upstream_write.is_complete() {
-            self.upstream_attempt.request_write_completed()?;
-            self.connection
-                .handle_event(ConnectionEvent::UpstreamWritable)?;
-            self.upstream_write.clear_if_complete();
-        }
-        Ok(advanced)
-    }
-
-    pub fn receive_upstream_bytes(&mut self, chunk: &[u8]) -> Result<usize, AppError> {
-        if self.connection.state != ConnectionState::ReadingUpstreamResponse {
-            return Err(invalid_connection_io_state());
-        }
-        self.client_write.try_append(chunk)?;
-        self.upstream_attempt.record_response_bytes(chunk.len())?;
-        Ok(chunk.len())
-    }
-
-    pub fn finish_upstream_response(&mut self) -> Result<(), AppError> {
-        self.connection
-            .handle_event(ConnectionEvent::UpstreamReadable)?;
-        self.upstream_attempt.succeed()
-    }
-
-    pub fn fail_upstream_attempt(
-        &mut self,
-        failure: UpstreamAttemptFailure,
-    ) -> Result<(), AppError> {
-        self.upstream_attempt.fail(failure)
-    }
-
-    pub fn upstream_attempt(&self) -> &UpstreamAttemptProgress {
-        &self.upstream_attempt
-    }
-
-    pub fn prepare_upstream_retry(&mut self) -> Result<(), AppError> {
-        if !matches!(
-            self.connection.state,
-            ConnectionState::ConnectingUpstream | ConnectionState::WritingUpstreamRequest
-        ) || self.upstream_attempt.terminal().is_none()
-        {
-            return Err(invalid_upstream_attempt_transition());
-        }
-        self.connection.state = ConnectionState::SelectingRoute;
-        self.upstream_attempt = UpstreamAttemptProgress::default();
-        self.upstream_write = WriteBuffer::default();
-        Ok(())
-    }
-
-    pub fn queue_client_response(&mut self, response: Vec<u8>) -> Result<(), AppError> {
-        if !self
-            .connection
-            .state
-            .can_transition_to(&ConnectionState::WritingClientResponse)
-        {
-            return Err(invalid_connection_io_state());
-        }
-        self.client_write = WriteBuffer::new(response);
-        self.connection
-            .transition_to(ConnectionState::WritingClientResponse)
-    }
-
-    pub fn advance_client_write(&mut self, byte_count: usize) -> Result<usize, AppError> {
-        if !matches!(
-            self.connection.state,
-            ConnectionState::ReadingUpstreamResponse | ConnectionState::WritingClientResponse
-        ) {
-            return Err(invalid_connection_io_state());
-        }
-        let advanced = self.client_write.advance(byte_count);
-        if self.connection.state == ConnectionState::WritingClientResponse
-            && self.client_write.is_complete()
-        {
-            self.connection
-                .handle_event(ConnectionEvent::ClientWritable)?;
-        }
-        if self.client_write.is_complete() {
-            self.client_write.clear_if_complete();
-        }
-        Ok(advanced)
-    }
-
-    pub fn upstream_write_buffer(&self) -> &WriteBuffer {
-        &self.upstream_write
-    }
-
-    pub fn client_write_buffer(&self) -> &WriteBuffer {
-        &self.client_write
-    }
-}
-
-fn invalid_connection_io_state() -> AppError {
-    AppError::new(
-        ErrorCode::RuntimeCommandRejected,
-        "operation is not valid for current connection state",
-    )
-}
-
-#[derive(Debug, Default)]
-pub struct ConnectionTable {
-    entries: BTreeMap<usize, Connection>,
-}
-
-impl ConnectionTable {
-    pub fn insert(&mut self, connection: Connection) -> Option<Connection> {
-        self.entries.insert(connection.token.as_usize(), connection)
-    }
-
-    pub fn get(&self, token: ConnectionToken) -> Option<&Connection> {
-        self.entries.get(&token.as_usize())
-    }
-
-    pub fn remove(&mut self, token: ConnectionToken) -> Option<Connection> {
-        self.entries.remove(&token.as_usize())
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    pub fn cleanup_closed(&mut self) -> Vec<ConnectionToken> {
-        let removable: Vec<_> = self
-            .entries
-            .iter()
-            .filter(|(_, connection)| {
-                matches!(
-                    connection.state,
-                    ConnectionState::Closed | ConnectionState::Failed
-                )
-            })
-            .map(|(token, _)| ConnectionToken::new(*token))
-            .collect();
-
-        for token in &removable {
-            self.entries.remove(&token.as_usize());
-        }
-
-        removable
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceLimits {
-    pub max_connections: usize,
-    pub max_request_header_bytes: usize,
-    pub max_request_body_bytes: usize,
-    pub idle_timeout: Duration,
-    pub connect_timeout: Duration,
-    pub upstream_read_timeout: Duration,
-    pub client_write_timeout: Duration,
-    pub max_response_buffer_bytes: usize,
-}
-
-impl Default for ResourceLimits {
-    fn default() -> Self {
-        Self {
-            max_connections: DEFAULT_MAX_CONNECTIONS,
-            max_request_header_bytes: FIXED_REQUEST_HEADER_RESERVE_BYTES,
-            max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
-            idle_timeout: Duration::from_secs(30),
-            connect_timeout: Duration::from_secs(5),
-            upstream_read_timeout: Duration::from_secs(30),
-            client_write_timeout: Duration::from_secs(30),
-            max_response_buffer_bytes: FIXED_RESPONSE_BUFFER_RESERVE_BYTES,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ResourceChargeId(u64);
-
-impl ResourceChargeId {
-    pub fn as_u64(self) -> u64 {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PayloadClass {
-    Request,
-    UpstreamRequest,
-    RetryReplay,
-    ClientResponse,
-    WebSocketClientToUpstream,
-    WebSocketUpstreamToClient,
-    TlsPending,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResourcePressureState {
-    Normal,
-    Pressured,
-    Exhausted,
-    FailedClosed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionAdmissionDecision {
-    Accepted,
-    RejectedConnectionLimit,
-    RejectedPayloadPressure,
-    RejectedFailedClosed,
-}
-
-pub fn connection_admission_decision(
-    pressure_state: ResourcePressureState,
-    active_connections: usize,
-    max_connections: usize,
-) -> ConnectionAdmissionDecision {
-    match pressure_state {
-        ResourcePressureState::FailedClosed => ConnectionAdmissionDecision::RejectedFailedClosed,
-        ResourcePressureState::Pressured | ResourcePressureState::Exhausted => {
-            ConnectionAdmissionDecision::RejectedPayloadPressure
-        }
-        ResourcePressureState::Normal if active_connections >= max_connections => {
-            ConnectionAdmissionDecision::RejectedConnectionLimit
-        }
-        ResourcePressureState::Normal => ConnectionAdmissionDecision::Accepted,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResponseReadInterestAction {
-    Keep,
-    Pause,
-    Resume,
-}
-
-pub fn response_read_interest_action(
-    pressure_state: ResourcePressureState,
-    connection_state: &ConnectionState,
-    upstream_registered: bool,
-    buffered_client_output_bytes: usize,
-    max_response_buffer_bytes: usize,
-) -> ResponseReadInterestAction {
-    if connection_state != &ConnectionState::ReadingUpstreamResponse {
-        return ResponseReadInterestAction::Keep;
-    }
-
-    let read_must_pause = pressure_state != ResourcePressureState::Normal
-        || buffered_client_output_bytes >= max_response_buffer_bytes;
-    match (upstream_registered, read_must_pause) {
-        (true, true) => ResponseReadInterestAction::Pause,
-        (false, false) => ResponseReadInterestAction::Resume,
-        (true, false) | (false, true) => ResponseReadInterestAction::Keep,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PayloadCharge {
-    id: ResourceChargeId,
-    connection_id: usize,
-    payload_class: PayloadClass,
-    charged_bytes: usize,
-    generation: u64,
-    state: ResourceChargeState,
-}
-
-impl PayloadCharge {
-    pub fn id(self) -> ResourceChargeId {
-        self.id
-    }
-
-    pub fn connection_id(self) -> usize {
-        self.connection_id
-    }
-
-    pub fn payload_class(self) -> PayloadClass {
-        self.payload_class
-    }
-
-    pub fn charged_bytes(self) -> usize {
-        self.charged_bytes
-    }
-
-    pub fn generation(self) -> u64 {
-        self.generation
-    }
-
-    pub fn state(self) -> ResourceChargeState {
-        self.state
-    }
-}
-
-#[derive(Debug)]
-pub struct PayloadBudgetLedger {
-    limit_bytes: usize,
-    used_bytes: usize,
-    generation: u64,
-    next_charge_id: u64,
-    charges: BTreeMap<ResourceChargeId, PayloadCharge>,
-    pressure_state: ResourcePressureState,
-}
-
-impl PayloadBudgetLedger {
-    pub fn new(policy: RuntimeResourcePolicy, generation: u64) -> Self {
-        Self {
-            limit_bytes: policy.max_inflight_payload_bytes(),
-            used_bytes: 0,
-            generation,
-            next_charge_id: 1,
-            charges: BTreeMap::new(),
-            pressure_state: ResourcePressureState::Normal,
-        }
-    }
-
-    pub fn limit_bytes(&self) -> usize {
-        self.limit_bytes
-    }
-
-    pub fn used_bytes(&self) -> usize {
-        self.used_bytes
-    }
-
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    pub fn live_charge_count(&self) -> usize {
-        self.charges.len()
-    }
-
-    pub fn pressure_state(&self) -> ResourcePressureState {
-        self.pressure_state
-    }
-
-    pub fn charge(&self, id: ResourceChargeId) -> Option<&PayloadCharge> {
-        self.charges.get(&id)
-    }
-
-    pub fn reserve(
-        &mut self,
-        connection_id: usize,
-        payload_class: PayloadClass,
-        requested_bytes: usize,
-        generation: u64,
-    ) -> Result<ResourceChargeId, AppError> {
-        if self.pressure_state == ResourcePressureState::FailedClosed {
-            return Err(resource_accounting_error(
-                "resource admission is failed closed",
-            ));
-        }
-        self.require_generation(generation)?;
-        if requested_bytes == 0 {
-            return self.fail_accounting("zero-byte resource charge is not allowed");
-        }
-        let next_used = self
-            .used_bytes
-            .checked_add(requested_bytes)
-            .ok_or_else(resource_capacity_error)?;
-        if next_used > self.limit_bytes {
-            self.pressure_state = ResourcePressureState::Exhausted;
-            return Err(resource_capacity_error());
-        }
-        let next_charge_id = self.next_charge_id.checked_add(1).ok_or_else(|| {
-            self.pressure_state = ResourcePressureState::FailedClosed;
-            resource_accounting_error("resource charge identity exhausted")
-        })?;
-        let id = ResourceChargeId(self.next_charge_id);
-        self.next_charge_id = next_charge_id;
-        self.used_bytes = next_used;
-        self.charges.insert(
-            id,
-            PayloadCharge {
-                id,
-                connection_id,
-                payload_class,
-                charged_bytes: requested_bytes,
-                generation,
-                state: ResourceChargeState::Granted,
-            },
-        );
-        self.refresh_pressure_after_usage_change();
-        Ok(id)
-    }
-
-    pub fn commit(
-        &mut self,
-        id: ResourceChargeId,
-        actual_logical_bytes: usize,
-        generation: u64,
-    ) -> Result<(), AppError> {
-        self.require_generation(generation)?;
-        let charge = self.live_charge(id, generation)?;
-        if charge.state != ResourceChargeState::Granted {
-            return self.fail_accounting("only granted charges can be committed");
-        }
-        self.replace_charge_bytes(id, actual_logical_bytes)?;
-        let Some(charge) = self.charges.get_mut(&id) else {
-            return self.fail_accounting("committed resource charge disappeared");
-        };
-        charge.state = ResourceChargeState::InUse;
-        Ok(())
-    }
-
-    pub fn resize(
-        &mut self,
-        id: ResourceChargeId,
-        next_logical_bytes: usize,
-        generation: u64,
-    ) -> Result<(), AppError> {
-        self.require_generation(generation)?;
-        let charge = self.live_charge(id, generation)?;
-        if !matches!(
-            charge.state,
-            ResourceChargeState::Granted
-                | ResourceChargeState::InUse
-                | ResourceChargeState::Transferred
-        ) {
-            return self.fail_accounting("charge cannot be resized in its current state");
-        }
-        self.replace_charge_bytes(id, next_logical_bytes)
-    }
-
-    pub fn grow(
-        &mut self,
-        id: ResourceChargeId,
-        additional_bytes: usize,
-        generation: u64,
-    ) -> Result<(), AppError> {
-        self.require_generation(generation)?;
-        if additional_bytes == 0 {
-            return Ok(());
-        }
-        let charge = self.live_charge(id, generation)?;
-        let Some(next_logical_bytes) = charge.charged_bytes.checked_add(additional_bytes) else {
-            self.pressure_state = ResourcePressureState::Exhausted;
-            return Err(resource_capacity_error());
-        };
-        self.resize(id, next_logical_bytes, generation)
-    }
-
-    pub fn transfer(
-        &mut self,
-        id: ResourceChargeId,
-        next_connection_id: usize,
-        next_payload_class: PayloadClass,
-        generation: u64,
-    ) -> Result<(), AppError> {
-        self.require_generation(generation)?;
-        let charge = self.live_charge(id, generation)?;
-        if !matches!(
-            charge.state,
-            ResourceChargeState::Granted
-                | ResourceChargeState::InUse
-                | ResourceChargeState::Transferred
-        ) {
-            return self.fail_accounting("charge cannot be transferred in its current state");
-        }
-        let Some(charge) = self.charges.get_mut(&id) else {
-            return self.fail_accounting("transferred resource charge disappeared");
-        };
-        charge.connection_id = next_connection_id;
-        charge.payload_class = next_payload_class;
-        charge.state = ResourceChargeState::Transferred;
-        Ok(())
-    }
-
-    pub fn release(&mut self, id: ResourceChargeId, generation: u64) -> Result<(), AppError> {
-        self.require_generation(generation)?;
-        self.remove_live_charge(id, generation, ResourceChargeState::Released)?;
-        Ok(())
-    }
-
-    pub fn release_after_allocation_failure(
-        &mut self,
-        id: ResourceChargeId,
-        generation: u64,
-    ) -> Result<(), AppError> {
-        self.require_generation(generation)?;
-        self.remove_live_charge(id, generation, ResourceChargeState::AllocationFailed)?;
-        Ok(())
-    }
-
-    fn require_generation(&mut self, generation: u64) -> Result<(), AppError> {
-        if generation != self.generation {
-            return self.fail_accounting("resource generation is stale");
-        }
-        Ok(())
-    }
-
-    fn live_charge(
-        &mut self,
-        id: ResourceChargeId,
-        generation: u64,
-    ) -> Result<PayloadCharge, AppError> {
-        let Some(charge) = self.charges.get(&id).copied() else {
-            return self.fail_accounting("resource charge is not live");
-        };
-        if charge.generation != generation || charge.state.is_terminal() {
-            return self.fail_accounting("resource charge identity is invalid");
-        }
-        Ok(charge)
-    }
-
-    fn replace_charge_bytes(
-        &mut self,
-        id: ResourceChargeId,
-        next_logical_bytes: usize,
-    ) -> Result<(), AppError> {
-        if next_logical_bytes == 0 {
-            return self.fail_accounting("live resource charge cannot be resized to zero");
-        }
-        let Some(previous_bytes) = self.charges.get(&id).map(|charge| charge.charged_bytes) else {
-            return self.fail_accounting("resized resource charge disappeared");
-        };
-        let without_previous = self.used_bytes.checked_sub(previous_bytes).ok_or_else(|| {
-            self.pressure_state = ResourcePressureState::FailedClosed;
-            resource_accounting_error("resource total is below live charge")
-        })?;
-        let next_used = without_previous
-            .checked_add(next_logical_bytes)
-            .ok_or_else(resource_capacity_error)?;
-        if next_used > self.limit_bytes {
-            self.pressure_state = ResourcePressureState::Exhausted;
-            return Err(resource_capacity_error());
-        }
-        self.used_bytes = next_used;
-        let Some(charge) = self.charges.get_mut(&id) else {
-            return self.fail_accounting("resized resource charge disappeared");
-        };
-        charge.charged_bytes = next_logical_bytes;
-        self.refresh_pressure_after_usage_change();
-        Ok(())
-    }
-
-    fn remove_live_charge(
-        &mut self,
-        id: ResourceChargeId,
-        generation: u64,
-        terminal_state: ResourceChargeState,
-    ) -> Result<PayloadCharge, AppError> {
-        debug_assert!(terminal_state.is_terminal());
-        let charge = self.live_charge(id, generation)?;
-        let Some(next_used) = self.used_bytes.checked_sub(charge.charged_bytes) else {
-            return self.fail_accounting("resource release exceeds current total");
-        };
-        let Some(live_charge) = self.charges.get_mut(&id) else {
-            return self.fail_accounting("released resource charge disappeared");
-        };
-        live_charge.state = terminal_state;
-        self.charges.remove(&id);
-        self.used_bytes = next_used;
-        self.refresh_pressure_after_usage_change();
-        Ok(charge)
-    }
-
-    fn refresh_pressure_after_usage_change(&mut self) {
-        if self.pressure_state == ResourcePressureState::FailedClosed {
-            return;
-        }
-        let high_watermark = self.limit_bytes * 80 / 100;
-        let low_watermark = self.limit_bytes * 60 / 100;
-        self.pressure_state = match self.pressure_state {
-            ResourcePressureState::Normal if self.used_bytes < high_watermark => {
-                ResourcePressureState::Normal
-            }
-            ResourcePressureState::Pressured | ResourcePressureState::Exhausted
-                if self.used_bytes <= low_watermark =>
-            {
-                ResourcePressureState::Normal
-            }
-            ResourcePressureState::Normal
-            | ResourcePressureState::Pressured
-            | ResourcePressureState::Exhausted => ResourcePressureState::Pressured,
-            ResourcePressureState::FailedClosed => ResourcePressureState::FailedClosed,
-        };
-    }
-
-    fn fail_accounting<T>(&mut self, message: &'static str) -> Result<T, AppError> {
-        self.pressure_state = ResourcePressureState::FailedClosed;
-        Err(resource_accounting_error(message))
-    }
-}
-
-fn resource_capacity_error() -> AppError {
-    AppError::new(
-        ErrorCode::ResourcePayloadCapacityReached,
-        "logical payload capacity reached",
-    )
-}
-
-fn resource_accounting_error(message: &'static str) -> AppError {
-    AppError::new(ErrorCode::ResourceAccountingInvariantFailed, message)
-}
-
 #[derive(Debug, Default)]
 struct ConnectionPayloadCharges {
     request: Option<ResourceChargeId>,
@@ -9299,13 +7050,6 @@ struct ConnectionPayloadCharges {
     websocket_upstream_to_client: Option<ResourceChargeId>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ClientResponseChargeChange {
-    charge_id: ResourceChargeId,
-    previous_bytes: Option<usize>,
-    next_bytes: usize,
-}
-
 impl ConnectionPayloadCharges {
     fn grow_request(
         &mut self,
@@ -9313,22 +7057,7 @@ impl ConnectionPayloadCharges {
         connection_id: usize,
         additional_bytes: usize,
     ) -> Result<(), AppError> {
-        if additional_bytes == 0 {
-            return Ok(());
-        }
-        let generation = ledger.generation();
-        if let Some(charge_id) = self.request {
-            ledger.grow(charge_id, additional_bytes, generation)
-        } else {
-            let charge_id = ledger.reserve(
-                connection_id,
-                PayloadClass::Request,
-                additional_bytes,
-                generation,
-            )?;
-            self.request = Some(charge_id);
-            Ok(())
-        }
+        request_payload_charge::grow(&mut self.request, ledger, connection_id, additional_bytes)
     }
 
     #[cfg(test)]
@@ -9351,7 +7080,7 @@ impl ConnectionPayloadCharges {
     }
 
     fn tls_pending_bytes(&self, ledger: &PayloadBudgetLedger) -> usize {
-        charge_bytes(ledger, self.tls_pending)
+        tls_pending_payload_charge::bytes(ledger, self.tls_pending)
     }
 
     fn sync_tls_pending(
@@ -9360,32 +7089,7 @@ impl ConnectionPayloadCharges {
         connection_id: usize,
         next_bytes: usize,
     ) -> Result<bool, AppError> {
-        let current_bytes = self.tls_pending_bytes(ledger);
-        if current_bytes == next_bytes {
-            return Ok(false);
-        }
-        if next_bytes == 0 {
-            release_charge_slot(&mut self.tls_pending, ledger)?;
-            return Ok(true);
-        }
-        if let Some(charge_id) = self.tls_pending {
-            ledger.resize(charge_id, next_bytes, ledger.generation())?;
-            return Ok(true);
-        }
-
-        let generation = ledger.generation();
-        let charge_id = ledger.reserve(
-            connection_id,
-            PayloadClass::TlsPending,
-            next_bytes,
-            generation,
-        )?;
-        if let Err(error) = ledger.commit(charge_id, next_bytes, generation) {
-            let _ = ledger.release(charge_id, generation);
-            return Err(error);
-        }
-        self.tls_pending = Some(charge_id);
-        Ok(true)
+        tls_pending_payload_charge::sync(&mut self.tls_pending, ledger, connection_id, next_bytes)
     }
 
     fn websocket_client_to_upstream_bytes(&self, ledger: &PayloadBudgetLedger) -> usize {
@@ -9431,16 +7135,11 @@ impl ConnectionPayloadCharges {
         ledger: &mut PayloadBudgetLedger,
         next_bytes: usize,
     ) -> Result<(), AppError> {
-        let Some(charge_id) = self.client_response else {
-            return ledger.fail_accounting("client response charge is not installed");
-        };
-        if next_bytes == 0 {
-            ledger.release(charge_id, ledger.generation())?;
-            self.client_response = None;
-            Ok(())
-        } else {
-            ledger.resize(charge_id, next_bytes, ledger.generation())
-        }
+        client_response_charge_transaction::resize_in_use(
+            &mut self.client_response,
+            ledger,
+            next_bytes,
+        )
     }
 
     fn prepare_client_response_bytes(
@@ -9449,32 +7148,12 @@ impl ConnectionPayloadCharges {
         connection_id: usize,
         next_bytes: usize,
     ) -> Result<ClientResponseChargeChange, AppError> {
-        let generation = ledger.generation();
-        if let Some(charge_id) = self.client_response {
-            let previous_bytes = ledger
-                .charge(charge_id)
-                .map(|charge| charge.charged_bytes())
-                .ok_or_else(|| resource_accounting_error("client response charge disappeared"))?;
-            ledger.resize(charge_id, next_bytes, generation)?;
-            Ok(ClientResponseChargeChange {
-                charge_id,
-                previous_bytes: Some(previous_bytes),
-                next_bytes,
-            })
-        } else {
-            let charge_id = ledger.reserve(
-                connection_id,
-                PayloadClass::ClientResponse,
-                next_bytes,
-                generation,
-            )?;
-            self.client_response = Some(charge_id);
-            Ok(ClientResponseChargeChange {
-                charge_id,
-                previous_bytes: None,
-                next_bytes,
-            })
-        }
+        client_response_charge_transaction::prepare(
+            &mut self.client_response,
+            ledger,
+            connection_id,
+            next_bytes,
+        )
     }
 
     fn commit_client_response_bytes(
@@ -9482,13 +7161,7 @@ impl ConnectionPayloadCharges {
         ledger: &mut PayloadBudgetLedger,
         change: ClientResponseChargeChange,
     ) -> Result<(), AppError> {
-        if self.client_response != Some(change.charge_id) {
-            return ledger.fail_accounting("client response change is not current");
-        }
-        if change.previous_bytes.is_none() {
-            ledger.commit(change.charge_id, change.next_bytes, ledger.generation())?;
-        }
-        Ok(())
+        client_response_charge_transaction::commit(self.client_response, ledger, change)
     }
 
     fn rollback_client_response_allocation(
@@ -9496,17 +7169,7 @@ impl ConnectionPayloadCharges {
         ledger: &mut PayloadBudgetLedger,
         change: ClientResponseChargeChange,
     ) -> Result<(), AppError> {
-        if self.client_response != Some(change.charge_id) {
-            return ledger.fail_accounting("client response rollback is not current");
-        }
-        let generation = ledger.generation();
-        if let Some(previous_bytes) = change.previous_bytes {
-            ledger.resize(change.charge_id, previous_bytes, generation)
-        } else {
-            ledger.release_after_allocation_failure(change.charge_id, generation)?;
-            self.client_response = None;
-            Ok(())
-        }
+        client_response_charge_transaction::rollback(&mut self.client_response, ledger, change)
     }
 
     fn reserve_upstream_and_retry(
@@ -9516,31 +7179,14 @@ impl ConnectionPayloadCharges {
         upstream_bytes: usize,
         retry_replay_bytes: usize,
     ) -> Result<(), AppError> {
-        if self.upstream.is_some() || self.retry_replay.is_some() {
-            return ledger.fail_accounting("upstream payload charges are already installed");
-        }
-        let generation = ledger.generation();
-        let upstream = ledger.reserve(
+        upstream_retry_charge_pair::reserve(
+            &mut self.upstream,
+            &mut self.retry_replay,
+            ledger,
             connection_id,
-            PayloadClass::UpstreamRequest,
             upstream_bytes,
-            generation,
-        )?;
-        let retry_replay = match ledger.reserve(
-            connection_id,
-            PayloadClass::RetryReplay,
             retry_replay_bytes,
-            generation,
-        ) {
-            Ok(charge_id) => charge_id,
-            Err(error) => {
-                ledger.release(upstream, generation)?;
-                return Err(error);
-            }
-        };
-        self.upstream = Some(upstream);
-        self.retry_replay = Some(retry_replay);
-        Ok(())
+        )
     }
 
     fn commit_upstream_and_retry(
@@ -9549,15 +7195,13 @@ impl ConnectionPayloadCharges {
         upstream_bytes: usize,
         retry_replay_bytes: usize,
     ) -> Result<(), AppError> {
-        let generation = ledger.generation();
-        let Some(upstream) = self.upstream else {
-            return ledger.fail_accounting("upstream charge is not installed");
-        };
-        let Some(retry_replay) = self.retry_replay else {
-            return ledger.fail_accounting("retry replay charge is not installed");
-        };
-        ledger.commit(upstream, upstream_bytes, generation)?;
-        ledger.commit(retry_replay, retry_replay_bytes, generation)
+        upstream_retry_charge_pair::commit(
+            self.upstream,
+            self.retry_replay,
+            ledger,
+            upstream_bytes,
+            retry_replay_bytes,
+        )
     }
 
     fn reserve_upstream_replacement(
@@ -9620,25 +7264,15 @@ impl ConnectionPayloadCharges {
         &mut self,
         ledger: &mut PayloadBudgetLedger,
     ) -> Result<(), AppError> {
-        let generation = ledger.generation();
-        if let Some(upstream) = self.upstream {
-            ledger.release_after_allocation_failure(upstream, generation)?;
-            self.upstream = None;
-        }
-        if let Some(retry_replay) = self.retry_replay {
-            ledger.release(retry_replay, generation)?;
-            self.retry_replay = None;
-        }
-        Ok(())
+        upstream_retry_charge_pair::release_after_allocation_failure(
+            &mut self.upstream,
+            &mut self.retry_replay,
+            ledger,
+        )
     }
 
     fn release_request(&mut self, ledger: &mut PayloadBudgetLedger) -> Result<(), AppError> {
-        let Some(charge_id) = self.request else {
-            return Ok(());
-        };
-        ledger.release(charge_id, ledger.generation())?;
-        self.request = None;
-        Ok(())
+        request_payload_charge::release(&mut self.request, ledger)
     }
 
     fn release_all(&mut self, ledger: &mut PayloadBudgetLedger) -> Result<(), AppError> {
@@ -9649,196 +7283,6 @@ impl ConnectionPayloadCharges {
         release_charge_slot(&mut self.tls_pending, ledger)?;
         release_charge_slot(&mut self.websocket_client_to_upstream, ledger)?;
         release_charge_slot(&mut self.websocket_upstream_to_client, ledger)
-    }
-}
-
-fn sync_payload_charge_slot(
-    slot: &mut Option<ResourceChargeId>,
-    payload_class: PayloadClass,
-    ledger: &mut PayloadBudgetLedger,
-    connection_id: usize,
-    next_bytes: usize,
-) -> Result<bool, AppError> {
-    let current_bytes = charge_bytes(ledger, *slot);
-    if current_bytes == next_bytes {
-        return Ok(false);
-    }
-    if next_bytes == 0 {
-        release_charge_slot(slot, ledger)?;
-        return Ok(true);
-    }
-    if let Some(charge_id) = *slot {
-        ledger.resize(charge_id, next_bytes, ledger.generation())?;
-        return Ok(true);
-    }
-
-    let generation = ledger.generation();
-    let charge_id = ledger.reserve(connection_id, payload_class, next_bytes, generation)?;
-    if let Err(error) = ledger.commit(charge_id, next_bytes, generation) {
-        let _ = ledger.release(charge_id, generation);
-        return Err(error);
-    }
-    *slot = Some(charge_id);
-    Ok(true)
-}
-
-fn tls_pending_owner_bytes(
-    client_transport: &ClientTransport,
-    pending_client_output: &PendingSocketOutput,
-    upstream_transport: &UpstreamTransport,
-    pending_upstream_output: &WriteBuffer,
-) -> Result<usize, AppError> {
-    let client_session = client_transport
-        .pending_tls_bytes()
-        .total_bytes()
-        .ok_or_else(|| resource_accounting_error("client TLS pending bytes overflowed"))?;
-    let upstream_session = upstream_transport
-        .pending_tls_bytes()
-        .total_bytes()
-        .ok_or_else(|| resource_accounting_error("upstream TLS pending bytes overflowed"))?;
-    let client_socket = if client_transport.is_tls() {
-        pending_client_output.remaining().len()
-    } else {
-        0
-    };
-    let upstream_socket = if upstream_transport.is_tls() {
-        pending_upstream_output.remaining_len()
-    } else {
-        0
-    };
-
-    client_session
-        .checked_add(client_socket)
-        .and_then(|bytes| bytes.checked_add(upstream_session))
-        .and_then(|bytes| bytes.checked_add(upstream_socket))
-        .ok_or_else(|| resource_accounting_error("connection TLS pending bytes overflowed"))
-}
-
-fn websocket_pending_owner_bytes(
-    upstream_to_client_plaintext: usize,
-    client_to_upstream_plaintext: usize,
-    client_transport: &ClientTransport,
-    pending_client_output: &PendingSocketOutput,
-    upstream_transport: &UpstreamTransport,
-    pending_upstream_output: &WriteBuffer,
-) -> Result<(usize, usize), AppError> {
-    let client_to_upstream_socket = if upstream_transport.is_tls() {
-        0
-    } else {
-        pending_upstream_output.remaining_len()
-    };
-    let upstream_to_client_socket = if client_transport.is_tls() {
-        0
-    } else {
-        pending_client_output.remaining().len()
-    };
-    let client_to_upstream = client_to_upstream_plaintext
-        .checked_add(client_to_upstream_socket)
-        .ok_or_else(|| resource_accounting_error("client WebSocket pending bytes overflowed"))?;
-    let upstream_to_client = upstream_to_client_plaintext
-        .checked_add(upstream_to_client_socket)
-        .ok_or_else(|| resource_accounting_error("upstream WebSocket pending bytes overflowed"))?;
-    Ok((client_to_upstream, upstream_to_client))
-}
-
-fn charge_bytes(ledger: &PayloadBudgetLedger, charge_id: Option<ResourceChargeId>) -> usize {
-    charge_id
-        .and_then(|charge_id| ledger.charge(charge_id))
-        .map(|charge| charge.charged_bytes())
-        .unwrap_or(0)
-}
-
-fn release_charge_slot(
-    slot: &mut Option<ResourceChargeId>,
-    ledger: &mut PayloadBudgetLedger,
-) -> Result<(), AppError> {
-    let Some(charge_id) = *slot else {
-        return Ok(());
-    };
-    ledger.release(charge_id, ledger.generation())?;
-    *slot = None;
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QueueError {
-    Full,
-}
-
-#[derive(Debug)]
-pub struct BoundedCommandQueue {
-    capacity: usize,
-    queue: VecDeque<CoreCommand>,
-}
-
-impl BoundedCommandQueue {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            capacity,
-            queue: VecDeque::new(),
-        }
-    }
-
-    pub fn push(&mut self, command: CoreCommand) -> Result<(), QueueError> {
-        if self.queue.len() >= self.capacity {
-            return Err(QueueError::Full);
-        }
-        self.queue.push_back(command);
-        Ok(())
-    }
-
-    pub fn pop(&mut self) -> Option<CoreCommand> {
-        self.queue.pop_front()
-    }
-
-    pub fn len(&self) -> usize {
-        self.queue.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum WorkerEvent {
-    ConfigSnapshotReady(ConfigSnapshot),
-    Failed(AppError),
-}
-
-#[derive(Debug, Default)]
-pub struct WorkerEventQueue {
-    events: VecDeque<WorkerEvent>,
-}
-
-impl WorkerEventQueue {
-    pub fn push(&mut self, event: WorkerEvent) {
-        self.events.push_back(event);
-    }
-
-    pub fn pop(&mut self) -> Option<WorkerEvent> {
-        self.events.pop_front()
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct TimerQueue {
-    timers: Vec<(Instant, ConnectionToken)>,
-}
-
-impl TimerQueue {
-    pub fn schedule(&mut self, token: ConnectionToken, deadline: Instant) {
-        self.timers.push((deadline, token));
-        self.timers.sort_by_key(|(deadline, _)| *deadline);
-    }
-
-    pub fn pop_expired(&mut self, now: Instant) -> Vec<ConnectionToken> {
-        let split = self
-            .timers
-            .iter()
-            .position(|(deadline, _)| *deadline > now)
-            .unwrap_or(self.timers.len());
-        self.timers.drain(..split).map(|(_, token)| token).collect()
     }
 }
 
@@ -9907,12 +7351,6 @@ impl CoreRuntime {
     }
 }
 
-impl Default for BoundedCommandQueue {
-    fn default() -> Self {
-        Self::new(128)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9926,22 +7364,101 @@ mod tests {
         tunnel_interest, tunnel_pressure_flow, BackpressureEvent, NoopHttp01ChallengeResponder,
         ResourceAccountingEvent, RuntimeUpstreamSelector, SnapshotProxyConfig, TunnelFlowControl,
     };
+    use crate::upstream_response_framing::{HttpResponseFraming, ResponseFramingPhase};
     use edge_application::{Http01Token, Http01TokenStore};
     use edge_domain::{
         AdminConfig, CertificateRef, ConfigRevisionId, CoreCommand, HostMatch, LogMode, PathMatch,
-        Route, RouteId, RouteMatch, RuntimeOptions, Service, ServiceId, Upstream,
-        UpstreamAvailability, UpstreamId, UpstreamTlsPolicy, MIN_MAX_INFLIGHT_PAYLOAD_BYTES,
+        Route, RouteId, RouteMatch, RuntimeOptions, RuntimeResourcePolicy, Service, ServiceId,
+        Upstream, UpstreamAvailability, UpstreamId, UpstreamTlsPolicy,
+        MIN_MAX_INFLIGHT_PAYLOAD_BYTES,
     };
     use edge_ports::{
-        CoreCommandClient, PassiveObservation, PassiveObservationDispatcher,
-        PassiveObservationSubmit, ScriptedServerTlsSessionFactory, ScriptedTlsSession,
+        ClientTlsSessionFactory, CoreCommandClient, PassiveObservation,
+        PassiveObservationDispatcher, PassiveObservationSubmit, ScriptedServerTlsSessionFactory,
+        ScriptedTlsSession, TlsPendingBytes, TlsSession, TlsSessionInterest, TlsSessionProgress,
     };
     use mio::Interest;
+    use socket2::SockRef;
     use std::io::{Read, Write};
     use std::net::{TcpListener as StdTcpListener, TcpStream as StdTcpStream};
     use std::thread;
 
     struct ChannelPassiveObservationDispatcher(std::sync::mpsc::SyncSender<PassiveObservation>);
+
+    #[derive(Clone)]
+    struct FailsAfterFirstTlsResponseSession {
+        inner: ScriptedTlsSession,
+        established_response_received: bool,
+    }
+
+    impl FailsAfterFirstTlsResponseSession {
+        fn new() -> Self {
+            Self {
+                inner: ScriptedTlsSession::new()
+                    .with_initial_encrypted(b"client-hello")
+                    .with_handshake_marker(b"server-hello"),
+                established_response_received: false,
+            }
+        }
+    }
+
+    impl TlsSession for FailsAfterFirstTlsResponseSession {
+        fn receive_encrypted(&mut self, bytes: &[u8]) -> Result<usize, AppError> {
+            if self.inner.progress() == TlsSessionProgress::Established {
+                if self.established_response_received {
+                    return Err(AppError::new(
+                        ErrorCode::TlsHandshakeFailed,
+                        "scripted TLS response decode failure",
+                    ));
+                }
+                self.established_response_received = true;
+            }
+            self.inner.receive_encrypted(bytes)
+        }
+
+        fn take_decrypted(&mut self, max_bytes: usize) -> Vec<u8> {
+            self.inner.take_decrypted(max_bytes)
+        }
+
+        fn receive_plaintext(&mut self, bytes: &[u8]) -> Result<usize, AppError> {
+            self.inner.receive_plaintext(bytes)
+        }
+
+        fn take_encrypted(&mut self, max_bytes: usize) -> Vec<u8> {
+            self.inner.take_encrypted(max_bytes)
+        }
+
+        fn progress(&self) -> TlsSessionProgress {
+            self.inner.progress()
+        }
+
+        fn interest(&self) -> TlsSessionInterest {
+            self.inner.interest()
+        }
+
+        fn pending_bytes(&self) -> TlsPendingBytes {
+            self.inner.pending_bytes()
+        }
+
+        fn sni_hostname(&self) -> Option<&str> {
+            self.inner.sni_hostname()
+        }
+
+        fn request_close_notify(&mut self) -> Result<(), AppError> {
+            self.inner.request_close_notify()
+        }
+    }
+
+    struct FailsAfterFirstTlsResponseFactory;
+
+    impl ClientTlsSessionFactory for FailsAfterFirstTlsResponseFactory {
+        fn create_client_session(
+            &self,
+            _server_name: &edge_domain::TlsServerName,
+        ) -> Result<Box<dyn TlsSession + Send>, AppError> {
+            Ok(Box::new(FailsAfterFirstTlsResponseSession::new()))
+        }
+    }
 
     impl PassiveObservationDispatcher for ChannelPassiveObservationDispatcher {
         fn submit(&mut self, observation: PassiveObservation) -> PassiveObservationSubmit {
@@ -10525,6 +8042,78 @@ mod tests {
         (address, handle)
     }
 
+    fn spawn_partial_response_then_hold_backend(
+        hold_for: Duration,
+    ) -> (std::net::SocketAddr, thread::JoinHandle<String>) {
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 512];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\npartial")
+                .unwrap();
+            thread::sleep(hold_for);
+            String::from_utf8_lossy(&request).to_string()
+        });
+        (address, handle)
+    }
+
+    fn spawn_partial_response_then_reset_backend() -> (
+        std::net::SocketAddr,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+        thread::JoinHandle<String>,
+    ) {
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (partial_written_tx, partial_written_rx) = std::sync::mpsc::channel();
+        let (reset_tx, reset_rx) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 512];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\npartial")
+                .unwrap();
+            partial_written_tx.send(()).unwrap();
+            reset_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            SockRef::from(&stream)
+                .set_linger(Some(Duration::ZERO))
+                .unwrap();
+            drop(stream);
+            String::from_utf8_lossy(&request).to_string()
+        });
+        (address, partial_written_rx, reset_tx, handle)
+    }
+
     fn spawn_chunked_hold_backend(
         hold_for: Duration,
     ) -> (std::net::SocketAddr, thread::JoinHandle<String>) {
@@ -10826,7 +8415,7 @@ mod tests {
     #[test]
     fn phase009_retry_request_rebuilds_selected_tls_host_and_preserves_upgrade() {
         let request = parse_http_request(
-            b"GET /socket HTTP/1.1\r\nHost: public.example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+            b"GET /socket HTTP/1.1\r\nHost: public.example.test\r\nConnection: keep-alive, Upgrade, X-Client-Hop\r\nUpgrade: websocket\r\nUpgrade: h2c\r\nKeep-Alive: timeout=5\r\nX-Client-Hop: private\r\nProxy-Connection: keep-alive\r\nTE: trailers\r\n\r\n",
             &HttpLimits::default(),
         )
         .unwrap();
@@ -10851,8 +8440,16 @@ mod tests {
 
         assert!(rebuilt.starts_with("GET /base/socket HTTP/1.1\r\n"));
         assert!(rebuilt.contains("\r\nHost: second-http.private.test\r\n"));
+        assert!(rebuilt.contains("\r\nConnection: Upgrade\r\n"));
         assert!(rebuilt.contains("\r\nUpgrade: websocket\r\n"));
+        assert!(!rebuilt.contains("\r\nUpgrade: h2c\r\n"));
         assert!(rebuilt.contains("\r\nX-Forwarded-Host: public.example.test\r\n"));
+        for name in ["Keep-Alive", "X-Client-Hop", "Proxy-Connection", "TE"] {
+            assert!(
+                !rebuilt.contains(&format!("\r\n{name}:")),
+                "upgrade request forwarded hop-by-hop header: {name}"
+            );
+        }
     }
 
     #[test]
@@ -11365,6 +8962,65 @@ mod tests {
     }
 
     #[test]
+    fn rejects_request_line_with_trailing_token() {
+        let error = parse_http_request(
+            b"GET / HTTP/1.1 trailing\r\nHost: example.com\r\n\r\n",
+            &HttpLimits::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+    }
+
+    #[test]
+    fn rejects_non_token_method_and_control_bytes_in_request_target() {
+        for input in [
+            b"GE\0T / HTTP/1.1\r\nHost: example.com\r\n\r\n".as_slice(),
+            b"GET /before\0after HTTP/1.1\r\nHost: example.com\r\n\r\n".as_slice(),
+            b"GET /before\x7fafter HTTP/1.1\r\nHost: example.com\r\n\r\n".as_slice(),
+        ] {
+            let error = parse_http_request(input, &HttpLimits::default()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+
+            let error = ClientRequestBuffer::default()
+                .push(input, &HttpLimits::default())
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+        }
+
+        let request = parse_http_request(
+            b"GET /items/a?mode=fast HTTP/1.1\r\nHost: example.com\r\n\r\n",
+            &HttpLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(request.path, "/items/a?mode=fast");
+    }
+
+    #[test]
+    fn rejects_missing_empty_or_duplicate_http11_host_authority() {
+        for input in [
+            b"GET / HTTP/1.1\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: \r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: public.example.test\r\nhOst: private.example.test\r\n\r\n"
+                .as_slice(),
+        ] {
+            let error = parse_http_request(input, &HttpLimits::default()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_request_versions() {
+        for input in [
+            b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n".as_slice(),
+            b"GET / HTTP/2.0\r\nHost: example.com\r\n\r\n".as_slice(),
+        ] {
+            let error = parse_http_request(input, &HttpLimits::default()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+        }
+    }
+
+    #[test]
     fn rejects_transfer_encoding_content_length_conflict() {
         let error = parse_http_request(
             b"POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\nabc",
@@ -11387,6 +9043,178 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+    }
+
+    #[test]
+    fn rejects_embedded_cr_or_lf_in_request_header_values() {
+        for input in [
+            b"GET / HTTP/1.1\r\nHost: example.com\rInjected: true\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: example.com\nInjected: true\r\n\r\n".as_slice(),
+        ] {
+            let error = parse_http_request(input, &HttpLimits::default()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+
+            let error = ClientRequestBuffer::default()
+                .push(input, &HttpLimits::default())
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+        }
+    }
+
+    #[test]
+    fn rejects_prohibited_control_bytes_but_allows_horizontal_tab_in_request_header_values() {
+        for input in [
+            b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Trace: before\0after\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Trace: before\x0bafter\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Trace: before\x7fafter\r\n\r\n".as_slice(),
+        ] {
+            let error = parse_http_request(input, &HttpLimits::default()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+
+            let error = ClientRequestBuffer::default()
+                .push(input, &HttpLimits::default())
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+        }
+
+        let request = parse_http_request(
+            b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Trace:\taccepted\r\n\r\n",
+            &HttpLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(request.header_value("X-Trace"), Some("accepted"));
+    }
+
+    #[test]
+    fn response_framing_rejects_prohibited_controls_but_allows_horizontal_tab_in_field_values() {
+        for response in [
+            b"HTTP/1.1 200 OK\r\nX-Trace: before\0after\r\nContent-Length: 0\r\n\r\n"
+                .as_slice(),
+            b"HTTP/1.1 200 OK\r\nX-Trace: before\x0bafter\r\nContent-Length: 0\r\n\r\n"
+                .as_slice(),
+            b"HTTP/1.1 200 OK\r\nX-Trace: before\x7fafter\r\nContent-Length: 0\r\n\r\n"
+                .as_slice(),
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Trace: before\0after\r\n\r\n"
+                .as_slice(),
+        ] {
+            let mut framing = HttpResponseFraming::new(256, 128);
+            let error = framing.push(response).unwrap_err();
+            assert_eq!(error.code, ErrorCode::RuntimeUpstreamBadGateway);
+            assert_eq!(framing.phase(), ResponseFramingPhase::Failed);
+        }
+
+        let mut header_tab = HttpResponseFraming::new(256, 128);
+        header_tab
+            .push(b"HTTP/1.1 200 OK\r\nX-Trace:\taccepted\r\nContent-Length: 0\r\n\r\n")
+            .unwrap();
+        assert_eq!(header_tab.phase(), ResponseFramingPhase::Complete);
+
+        let mut trailer_tab = HttpResponseFraming::new(256, 128);
+        trailer_tab
+            .push(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Trace:\taccepted\r\n\r\n")
+            .unwrap();
+        assert_eq!(trailer_tab.phase(), ResponseFramingPhase::Complete);
+    }
+
+    #[test]
+    fn adversarial_http_framing_corpus_rejects_without_panic() {
+        let request_limits = HttpLimits {
+            max_header_bytes: 32,
+            ..HttpLimits::default()
+        };
+        for request in [
+            b"GET / HTTP/1.1\r\nHost: example.com".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: \xff\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: example.com\rInjected: true\r\n\r\n".as_slice(),
+            b"POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nxx".as_slice(),
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nX-Long: 012345678901234567890123456789\r\n\r\n".as_slice(),
+        ] {
+            let error = parse_http_request(request, &request_limits).unwrap_err();
+            assert!(matches!(
+                error.code,
+                ErrorCode::HttpMalformedRequest
+                    | ErrorCode::HttpHeaderTooLarge
+                    | ErrorCode::HttpTransferEncodingContentLengthConflict
+            ));
+        }
+
+        for response in [
+            b"HTTP/1.1 200 OK\r\nBad Name: value\r\n\r\n".as_slice(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n".as_slice(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhi".as_slice(),
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n".as_slice(),
+            b"HTTP/1.1 200 OK\r\nX-Trace: trusted\nInjected: true\r\n\r\n".as_slice(),
+            b"HTTP/1.1 200 OK\r\nX-Long: 012345678901234567890123456789\r\n\r\n".as_slice(),
+        ] {
+            let mut framing = HttpResponseFraming::new(32, 32);
+            match framing.push(response) {
+                Err(_) => {}
+                Ok(_) => {
+                    let _ = framing.finish_on_eof().unwrap_err();
+                }
+            }
+            assert_eq!(framing.phase(), ResponseFramingPhase::Failed);
+        }
+    }
+
+    #[test]
+    fn bounded_http_framing_mutation_smoke_is_panic_free_and_terminal_at_eof() {
+        const REQUEST: &[u8] =
+            b"POST /items HTTP/1.1\r\nHost: example.com\r\nContent-Length: 3\r\n\r\nabc";
+        const RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+
+        for seed in 0..256 {
+            let request = bounded_http_mutation(REQUEST, seed);
+            assert!(
+                std::panic::catch_unwind(|| {
+                    let _ = parse_http_request(&request, &HttpLimits::default());
+                    let _ = ClientRequestBuffer::default().push(&request, &HttpLimits::default());
+                })
+                .is_ok(),
+                "request parser panicked for mutation seed {seed}"
+            );
+
+            let response = bounded_http_mutation(RESPONSE, seed);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut framing = HttpResponseFraming::new(128, 64);
+                let _ = framing.push(&response);
+                let _ = framing.finish_on_eof();
+                framing.phase()
+            }));
+            assert!(
+                matches!(
+                    result,
+                    Ok(ResponseFramingPhase::Complete | ResponseFramingPhase::Failed)
+                ),
+                "response framer did not reach a safe terminal state for mutation seed {seed}"
+            );
+        }
+    }
+
+    fn bounded_http_mutation(base: &[u8], seed: u32) -> Vec<u8> {
+        let mut state = seed.wrapping_add(0x9e37_79b9);
+        let mut bytes = base.to_vec();
+        for _ in 0..4 {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let index = (state as usize) % bytes.len();
+            bytes[index] ^= (state >> 24) as u8;
+        }
+        bytes.truncate((state as usize) % (base.len() + 1));
+        bytes
+    }
+
+    #[test]
+    fn rejects_content_length_mismatch_in_complete_request_parser() {
+        for input in [
+            b"POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\nabc".as_slice(),
+            b"POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 3\r\n\r\nabcd".as_slice(),
+        ] {
+            let error = parse_http_request(input, &HttpLimits::default()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+        }
     }
 
     #[test]
@@ -12378,6 +10206,29 @@ mod tests {
     }
 
     #[test]
+    fn rejects_empty_request_header_name() {
+        for input in [
+            b"GET / HTTP/1.1\r\n: value\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\n   : value\r\n\r\n".as_slice(),
+        ] {
+            let error = parse_http_request(input, &HttpLimits::default()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+        }
+    }
+
+    #[test]
+    fn rejects_non_token_request_header_name() {
+        for input in [
+            b"GET / HTTP/1.1\r\nBad Name: value\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nBad@Name: value\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nBad\x7fName: value\r\n\r\n".as_slice(),
+        ] {
+            let error = parse_http_request(input, &HttpLimits::default()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::HttpMalformedRequest);
+        }
+    }
+
+    #[test]
     fn rejects_oversized_headers() {
         let limits = HttpLimits {
             max_header_bytes: 10,
@@ -12399,6 +10250,10 @@ mod tests {
             Header {
                 name: "X-Custom-Hop".to_string(),
                 value: "drop".to_string(),
+            },
+            Header {
+                name: "Proxy-Connection".to_string(),
+                value: "keep-alive".to_string(),
             },
             Header {
                 name: "Host".to_string(),
@@ -12424,13 +10279,27 @@ mod tests {
 
     #[test]
     fn detects_websocket_upgrade() {
-        let request = parse_http_request(
-            b"GET /socket HTTP/1.1\r\nHost: example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
-            &HttpLimits::default(),
-        )
-        .unwrap();
+        for input in [
+            b"GET /socket HTTP/1.1\r\nHost: example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
+                .as_slice(),
+            b"GET /socket HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive, Upgrade\r\nUpgrade: WebSocket\r\n\r\n"
+                .as_slice(),
+        ] {
+            let request = parse_http_request(input, &HttpLimits::default()).unwrap();
+            assert!(is_websocket_upgrade(&request));
+        }
 
-        assert!(is_websocket_upgrade(&request));
+        for input in [
+            b"GET /socket HTTP/1.1\r\nHost: example.com\r\nConnection: X-Upgrade\r\nUpgrade: websocket\r\n\r\n"
+                .as_slice(),
+            b"GET /socket HTTP/1.1\r\nHost: example.com\r\nConnection: no-upgrade\r\nUpgrade: websocket\r\n\r\n"
+                .as_slice(),
+            b"GET /socket HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\nUpgrade: websocket\r\n\r\n"
+                .as_slice(),
+        ] {
+            let request = parse_http_request(input, &HttpLimits::default()).unwrap();
+            assert!(!is_websocket_upgrade(&request));
+        }
     }
 
     #[test]
@@ -12672,6 +10541,80 @@ mod tests {
             resource_events.iter().any(|event| event.used_bytes > 0),
             "expected observable runtime charge: {resource_events:?}"
         );
+        assert_eq!(
+            resource_events.last(),
+            Some(&ResourceAccountingEvent {
+                used_bytes: 0,
+                live_charges: 0,
+                client_response_bytes: 0,
+                tls_pending_bytes: 0,
+                websocket_client_to_upstream_bytes: 0,
+                websocket_upstream_to_client_bytes: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_releases_partial_tls_handshake_charge_after_idle_timeout() {
+        let (api_addr, api_backend) = spawn_text_backend("tls-timeout-recovered");
+        let snapshot = snapshot_for_runtime(
+            vec![route_to_service(
+                "api",
+                "api.example.test",
+                "/",
+                "api-service",
+            )],
+            vec![service_with_upstream("api-service", api_addr)],
+        );
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (resource_tx, resource_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default())
+                    .with_tls_session_factory(ScriptedServerTlsSessionFactory::new(
+                        ScriptedTlsSession::new(),
+                    ))
+                    .with_resource_limits(ResourceLimits {
+                        idle_timeout: Duration::from_millis(100),
+                        ..ResourceLimits::default()
+                    })
+                    .with_resource_policy(
+                        RuntimeResourcePolicy::try_new(1, MIN_MAX_INFLIGHT_PAYLOAD_BYTES).unwrap(),
+                    )
+                    .with_resource_accounting_events(resource_tx),
+                2,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut stalled = StdTcpStream::connect(listen).unwrap();
+        stalled
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stalled.write_all(b"clie").unwrap();
+        let mut closed_payload = Vec::new();
+        let closed = stalled.read_to_end(&mut closed_payload);
+        assert!(
+            closed.is_ok()
+                || closed.as_ref().is_err_and(|error| matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::UnexpectedEof
+                )),
+            "stalled TLS client was not closed: {closed:?}"
+        );
+
+        let response = request_fake_tls_host(listen, b"client-hello", "api.example.test");
+        assert!(response.ends_with("tls-timeout-recoveredclose_notify"));
+        let upstream_request = api_backend.join().unwrap();
+        runtime_thread.join().unwrap();
+        let resource_events: Vec<_> = resource_rx.try_iter().collect();
+
+        assert!(upstream_request.contains("X-Forwarded-Proto: https"));
         assert_eq!(
             resource_events.last(),
             Some(&ResourceAccountingEvent {
@@ -14308,6 +12251,89 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_mio_runtime_closes_after_partial_response_reset_without_synthetic_502() {
+        let (api_addr, partial_written_rx, reset_tx, api_backend) =
+            spawn_partial_response_then_reset_backend();
+        let snapshot = snapshot_for_runtime(
+            vec![route_to_service(
+                "api",
+                "api.example.test",
+                "/",
+                "api-service",
+            )],
+            vec![service_with_upstream("api-service", api_addr)],
+        );
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default()),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n")
+            .unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        partial_written_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+
+        let mut response = Vec::new();
+        let mut buffer = [0_u8; 512];
+        while !response
+            .windows(b"partial".len())
+            .any(|window| window == b"partial")
+        {
+            let read = client.read(&mut buffer).unwrap();
+            assert!(read > 0, "client closed before partial response arrived");
+            response.extend_from_slice(&buffer[..read]);
+        }
+        reset_tx.send(()).unwrap();
+        loop {
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => response.extend_from_slice(&buffer[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                Err(error) => panic!("client read after upstream reset failed: {error}"),
+            }
+        }
+
+        let api_request = api_backend.join().unwrap();
+        runtime_thread.join().unwrap();
+        let response = String::from_utf8_lossy(&response);
+
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response was {response:?}"
+        );
+        assert!(response.contains("partial"), "response was {response:?}");
+        assert!(
+            !response.contains("502 Bad Gateway"),
+            "partial response must not be followed by a synthetic bad-gateway response: {response:?}"
+        );
+        assert_eq!(
+            response.matches("HTTP/1.1 ").count(),
+            1,
+            "response was {response:?}"
+        );
+        assert!(
+            api_request.contains("Host: api.example.test"),
+            "upstream request was {api_request:?}"
+        );
+    }
+
+    #[test]
     fn snapshot_mio_runtime_maps_upstream_read_timeout_to_504() {
         let (api_addr, api_backend) = spawn_slow_response_backend(Duration::from_millis(600));
         let snapshot = snapshot_for_runtime(
@@ -14357,6 +12383,74 @@ mod tests {
         assert!(
             response.contains("HTTP/1.1 504 Gateway Timeout"),
             "response was {response:?}; upstream request was {api_request:?}"
+        );
+        assert!(
+            api_request.contains("Host: api.example.test"),
+            "upstream request was {api_request:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_closes_after_partial_response_read_timeout_without_synthetic_504() {
+        let (api_addr, api_backend) =
+            spawn_partial_response_then_hold_backend(Duration::from_millis(600));
+        let snapshot = snapshot_for_runtime(
+            vec![route_to_service(
+                "api",
+                "api.example.test",
+                "/",
+                "api-service",
+            )],
+            vec![service_with_upstream("api-service", api_addr)],
+        );
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default())
+                    .with_resource_limits(ResourceLimits {
+                        idle_timeout: Duration::from_secs(10),
+                        connect_timeout: Duration::from_secs(10),
+                        upstream_read_timeout: Duration::from_millis(200),
+                        client_write_timeout: Duration::from_secs(10),
+                        ..ResourceLimits::default()
+                    }),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n")
+            .unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+
+        let api_request = api_backend.join().unwrap();
+        runtime_thread.join().unwrap();
+
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response was {response:?}"
+        );
+        assert!(response.contains("partial"), "response was {response:?}");
+        assert!(
+            !response.contains("504 Gateway Timeout"),
+            "partial response must not be followed by a synthetic timeout response: {response:?}"
+        );
+        assert_eq!(
+            response.matches("HTTP/1.1 ").count(),
+            1,
+            "response was {response:?}"
         );
         assert!(
             api_request.contains("Host: api.example.test"),
@@ -14433,10 +12527,7 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\nConnection: keep-alive\r\n\r\n",
         );
 
-        assert_eq!(
-            response,
-            b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\nConnection: keep-alive\r\n\r\n"
-        );
+        assert_eq!(response, b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\n");
         assert!(upstream_request.starts_with("HEAD / HTTP/1.1\r\n"));
         assert_eq!(
             resource_events.last(),
@@ -14449,6 +12540,31 @@ mod tests {
                 websocket_upstream_to_client_bytes: 0,
             })
         );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_strips_upstream_response_hop_by_hop_headers() {
+        let (response, _, _) = run_raw_response_through_mio(
+            "GET",
+            b"HTTP/1.1 200 OK\r\nConnection: keep-alive, X-Upstream-Hop\r\nX-Upstream-Hop: private\r\nProxy-Connection: keep-alive\r\nKeep-Alive: timeout=5\r\nContent-Length: 2\r\nETag: stable\r\n\r\nok",
+        );
+        let response = String::from_utf8(response).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("Content-Length: 2\r\n"));
+        assert!(response.contains("ETag: stable\r\n"));
+        assert!(response.ends_with("\r\n\r\nok"));
+        for header in [
+            "Connection:",
+            "X-Upstream-Hop:",
+            "Proxy-Connection:",
+            "Keep-Alive:",
+        ] {
+            assert!(
+                !response.contains(header),
+                "response forwarded hop-by-hop header {header}: {response:?}"
+            );
+        }
     }
 
     #[test]
@@ -14480,6 +12596,36 @@ mod tests {
 
         assert!(
             response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
+            "response={response:?}"
+        );
+        assert_eq!(
+            resource_events.last(),
+            Some(&ResourceAccountingEvent {
+                used_bytes: 0,
+                live_charges: 0,
+                client_response_bytes: 0,
+                tls_pending_bytes: 0,
+                websocket_client_to_upstream_bytes: 0,
+                websocket_upstream_to_client_bytes: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_replaces_conflicting_unstarted_response_framing_with_502() {
+        let (response, _, resource_events) = run_raw_response_through_mio(
+            "GET",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
+        );
+        let response = String::from_utf8_lossy(&response);
+
+        assert!(
+            response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
+            "response={response:?}"
+        );
+        assert_eq!(
+            response.matches("HTTP/1.1 ").count(),
+            1,
             "response={response:?}"
         );
         assert_eq!(
@@ -14599,7 +12745,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_mio_runtime_maps_slow_client_header_to_408() {
+    fn snapshot_mio_runtime_maps_slow_client_header_to_one_closed_408_and_cleanup() {
         let snapshot = snapshot_for_runtime(vec![], vec![]);
         let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
         let listen = listener.local_addr().unwrap();
@@ -14642,6 +12788,191 @@ mod tests {
         assert!(
             response.contains("HTTP/1.1 408 Request Timeout"),
             "response was {response:?}"
+        );
+        assert_eq!(
+            response.matches("HTTP/1.1 408 Request Timeout").count(),
+            1,
+            "response was {response:?}"
+        );
+        assert!(
+            response.contains("Connection: close\r\n"),
+            "response was {response:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_rejects_oversized_body_before_route_and_releases_charge() {
+        let snapshot = snapshot_for_runtime(vec![], vec![]);
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (resource_tx, resource_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(
+                    listen,
+                    snapshot,
+                    HttpLimits {
+                        max_body_bytes: 4,
+                        ..HttpLimits::default()
+                    },
+                )
+                .with_resource_accounting_events(resource_tx),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(
+                b"POST /large HTTP/1.1\r\nHost: api.example.test\r\nContent-Length: 5\r\n\r\nhello",
+            )
+            .unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+
+        runtime_thread.join().unwrap();
+
+        assert!(
+            response.starts_with("HTTP/1.1 413 Payload Too Large\r\n"),
+            "response was {response:?}"
+        );
+        assert!(
+            response.contains("Connection: close\r\n"),
+            "response was {response:?}"
+        );
+        assert_eq!(
+            resource_rx.try_iter().last(),
+            Some(ResourceAccountingEvent {
+                used_bytes: 0,
+                live_charges: 0,
+                client_response_bytes: 0,
+                tls_pending_bytes: 0,
+                websocket_client_to_upstream_bytes: 0,
+                websocket_upstream_to_client_bytes: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_rejects_conflicting_content_length_before_route_and_releases_charge() {
+        let snapshot = snapshot_for_runtime(vec![], vec![]);
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (resource_tx, resource_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default())
+                    .with_resource_accounting_events(resource_tx),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(
+                b"POST /ambiguous HTTP/1.1\r\nHost: api.example.test\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nxx",
+            )
+            .unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+
+        runtime_thread.join().unwrap();
+
+        assert!(
+            response.starts_with("HTTP/1.1 400 Bad Request\r\n"),
+            "response was {response:?}"
+        );
+        assert_eq!(response.matches("HTTP/1.1 400 Bad Request").count(), 1);
+        assert!(response.contains("Connection: close\r\n"));
+        assert_eq!(
+            resource_rx.try_iter().last(),
+            Some(ResourceAccountingEvent {
+                used_bytes: 0,
+                live_charges: 0,
+                client_response_bytes: 0,
+                tls_pending_bytes: 0,
+                websocket_client_to_upstream_bytes: 0,
+                websocket_upstream_to_client_bytes: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_times_out_incomplete_body_and_releases_charge() {
+        let snapshot = snapshot_for_runtime(vec![], vec![]);
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (resource_tx, resource_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default())
+                    .with_resource_limits(ResourceLimits {
+                        idle_timeout: Duration::from_millis(100),
+                        connect_timeout: Duration::from_secs(2),
+                        upstream_read_timeout: Duration::from_secs(2),
+                        client_write_timeout: Duration::from_secs(2),
+                        ..ResourceLimits::default()
+                    })
+                    .with_resource_accounting_events(resource_tx),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(
+                b"POST /slow HTTP/1.1\r\nHost: api.example.test\r\nContent-Length: 2\r\n\r\na",
+            )
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+
+        runtime_thread.join().unwrap();
+
+        assert!(
+            response.starts_with("HTTP/1.1 408 Request Timeout\r\n"),
+            "response was {response:?}"
+        );
+        assert!(
+            response.contains("Connection: close\r\n"),
+            "response was {response:?}"
+        );
+        assert_eq!(
+            resource_rx.try_iter().last(),
+            Some(ResourceAccountingEvent {
+                used_bytes: 0,
+                live_charges: 0,
+                client_response_bytes: 0,
+                tls_pending_bytes: 0,
+                websocket_client_to_upstream_bytes: 0,
+                websocket_upstream_to_client_bytes: 0,
+            })
         );
     }
 
@@ -15184,6 +13515,7 @@ mod tests {
         assert!(upstream_request.contains("X-Forwarded-Proto: http"));
         assert!(upstream_request.contains("X-Forwarded-Host: example.test"));
         assert!(response.contains("HTTP/1.1 200 OK"));
+        assert!(!response.contains("Connection: close"));
         assert!(response.ends_with("ok"));
     }
 
@@ -15972,6 +14304,104 @@ mod tests {
         );
         assert!(
             request.contains("X-Forwarded-Host: public.example.test"),
+            "{request:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_closes_after_tls_partial_response_decode_failure_without_synthetic_502()
+    {
+        let backend = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let (partial_written_tx, partial_written_rx) = std::sync::mpsc::channel();
+        let (trigger_tx, trigger_rx) = std::sync::mpsc::channel();
+        let backend_thread = thread::spawn(move || {
+            let (mut stream, _) = backend.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut hello = [0_u8; 12];
+            stream.read_exact(&mut hello).unwrap();
+            assert_eq!(&hello, b"client-hello");
+            stream.write_all(b"server-hello").unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "upstream request closed before headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\npartial")
+                .unwrap();
+            partial_written_tx.send(()).unwrap();
+            trigger_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            stream.write_all(b"failure").unwrap();
+            String::from_utf8_lossy(&request).to_string()
+        });
+        let (snapshot, service_id, upstream_id) = phase009_private_tls_snapshot(backend_addr);
+        let mut registry = PreparedClientTlsRegistry::new();
+        registry
+            .insert(service_id, upstream_id, FailsAfterFirstTlsResponseFactory)
+            .unwrap();
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default())
+                    .with_client_tls_registry(registry),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: public.example.test\r\n\r\n")
+            .unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        partial_written_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        let mut response = Vec::new();
+        let mut buffer = [0_u8; 512];
+        while !response
+            .windows(b"partial".len())
+            .any(|window| window == b"partial")
+        {
+            let read = client.read(&mut buffer).unwrap();
+            assert!(read > 0, "client closed before partial response arrived");
+            response.extend_from_slice(&buffer[..read]);
+        }
+        trigger_tx.send(()).unwrap();
+        loop {
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => response.extend_from_slice(&buffer[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                Err(error) => panic!("client read after TLS decode failure failed: {error}"),
+            }
+        }
+
+        let request = backend_thread.join().unwrap();
+        runtime_thread.join().unwrap();
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response:?}");
+        assert!(response.contains("partial"), "{response:?}");
+        assert!(
+            !response.contains("502 Bad Gateway"),
+            "partial response must not be followed by a synthetic bad-gateway response: {response:?}"
+        );
+        assert_eq!(response.matches("HTTP/1.1 ").count(), 1, "{response:?}");
+        assert!(
+            request.contains("Host: backend.private.test"),
             "{request:?}"
         );
     }

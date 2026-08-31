@@ -3,34 +3,113 @@
 //! This crate defines the API contract, authentication/session rules, and the
 //! CoreCommand boundary. A concrete HTTP server can wrap these handlers later.
 
-use std::collections::BTreeMap;
-
+#[cfg(test)]
+use edge_application::default_support_bundle_bounds;
+#[cfg(test)]
+use edge_application::render_mvp_config_snapshot;
+#[cfg(test)]
+use edge_application::ConfigValidator;
+#[cfg(test)]
+use edge_application::MetricSnapshotReaderPort;
 use edge_application::{
-    add_proxy_host, certificate_status, config_activation_state, default_support_bundle_bounds,
-    diff_config, import_manual_certificate_and_install, issue_certificate_for_ref_and_install,
-    issue_certificate_for_ref_with_http01_and_install, parse_mvp_config, query_audit,
-    remove_proxy_host, render_mvp_config_snapshot, renew_certificate_for_ref_and_install,
-    update_proxy_host, AccessLogEvent, CertificateIssueOutcome, CertificateIssuer,
-    CertificateRenewRequest, CertificateStatus, CollectSupportBundleUseCase, ConfigActivationState,
-    ConfigDiff, ConfigLifecycle, ConfigValidator, ManualCertificateImportOutcome,
-    ManualCertificateImportRequest, MetricSeriesValue, MetricSnapshot, MetricSnapshotReaderPort,
-    RecentErrorEvent, ValidationReport,
+    add_proxy_host, certificate_status, issue_certificate_for_ref_and_install,
+    issue_certificate_for_ref_with_http01_and_install, remove_proxy_host,
+    renew_certificate_for_ref_and_install, update_proxy_host, CertificateIssuer,
+    CertificateRenewRequest, CertificateStatus, ConfigLifecycle, ManualCertificateImportRequest,
 };
+#[cfg(test)]
+use edge_application::{AccessLogEvent, RecentErrorEvent};
+#[cfg(test)]
+use edge_application::{MetricSeriesValue, MetricSnapshot};
+#[cfg(test)]
+use edge_domain::HealthCheckPolicy;
+#[cfg(test)]
+use edge_domain::OperationalLifecycle;
+#[cfg(test)]
+use edge_domain::SupportBundleArtifact;
 use edge_domain::{
-    AppError, AuditAction, AuditAdmissionState, AuditCursor, AuditOutcome, AuditPage, AuditQuery,
-    AuditTargetKind, CertificateRef, ConfigRevisionId, ConfigSnapshot, ErrorCode,
-    HealthAvailabilitySnapshot, HealthCheckPolicy, HostMatch, HttpHealthCheckPolicy,
-    OperationalLifecycle, PassiveHealthMode, PathMatch, ProbeStatus, ProxyHost, ProxyHostId,
-    RetryPolicy, Route, SupportBundleArtifact, TrustBundleRef, Upstream,
-    UpstreamAdministrativeState, UpstreamAvailability, UpstreamId, ValidationError,
+    AppError, CertificateRef, ConfigRevisionId, ConfigSnapshot, ErrorCode, ProxyHostId,
+    TrustBundleRef, ValidationError,
 };
+#[cfg(test)]
+use edge_domain::{PassiveHealthMode, RetryPolicy};
 use edge_ports::{
-    AcmeClient, AcmeOrderRequest, AuditLedgerReader, AuditSink, CertificateMaterialValidator,
-    CertificateStore, ConfigRevisionRepository, CoreCommandClient, HealthStatusReader,
-    Http01ChallengeProbe, Http01ChallengeStore, RuntimeDrainState, RuntimeUpstreamStatusReader,
-    RuntimeUpstreamStatusSnapshot, SecretRecord, SecretStore, SupportBundleCollector,
-    SupportBundleRequest, TrustBundleMetadata,
+    AcmeClient, AcmeOrderRequest, AuditSink, CertificateStore, ConfigRevisionRepository,
+    CoreCommandClient, Http01ChallengeProbe, Http01ChallengeStore, TrustBundleMetadata,
 };
+#[cfg(test)]
+use edge_ports::{SecretRecord, SecretStore, SupportBundleCollector, SupportBundleRequest};
+
+mod http_envelope;
+pub use http_envelope::*;
+mod status_read_model;
+pub use status_read_model::*;
+mod session_auth;
+mod status_http;
+pub use session_auth::*;
+mod error_response;
+pub use error_response::*;
+mod admin_json_contract;
+mod audit_and_log_read_http;
+mod audit_read_model;
+use admin_json_contract::*;
+mod certificate_read_http;
+mod config_mutation_http;
+mod config_read_http;
+mod config_source_schema;
+mod health_response_http;
+mod http_dispatch;
+mod manual_certificate_import_http;
+mod proxy_host_member_path;
+mod proxy_host_mutation_http;
+mod proxy_host_read_http;
+mod proxy_host_request_decoder;
+mod proxy_host_request_model;
+mod proxy_host_snapshot_projection;
+mod runtime_metrics_http;
+mod runtime_metrics_read_model;
+mod stateful_session_http;
+mod support_bundle_api;
+mod trust_bundle_http;
+pub use audit_and_log_read_http::{
+    handle_access_logs_http, handle_audit_query_http, handle_error_logs_http,
+};
+#[cfg(test)]
+use audit_read_model::{decode_audit_cursor, encode_audit_cursor};
+pub use certificate_read_http::{handle_certificate_get_http, handle_certificate_list_http};
+pub use config_mutation_http::{handle_config_apply_http, handle_config_rollback_http};
+pub use config_read_http::{
+    handle_config_diff_http, handle_config_get_http, handle_config_validate_http,
+};
+pub use config_source_schema::{
+    parse_valid_config_source, validate_config, validate_config_source,
+};
+pub use health_response_http::{
+    handle_health_http, handle_operational_probe_http, handle_upstream_health_http,
+};
+pub(crate) use http_dispatch::is_mutation_route;
+pub use http_dispatch::{handle_http_request, AdminHttpContext};
+pub use manual_certificate_import_http::handle_certificate_import_http;
+pub use proxy_host_member_path::{
+    proxy_host_id_from_delete_path, proxy_host_id_from_get_path, proxy_host_id_from_update_path,
+};
+pub use proxy_host_mutation_http::{
+    handle_proxy_host_create_http, handle_proxy_host_delete_http, handle_proxy_host_update_http,
+};
+pub use proxy_host_read_http::{handle_proxy_host_get_http, handle_proxy_host_list_http};
+pub use proxy_host_request_decoder::proxy_host_request_from_json;
+pub use proxy_host_request_model::{
+    proxy_host_from_request, ProxyHostRequest, ProxyHostUpstreamRequest,
+};
+pub use proxy_host_snapshot_projection::{
+    proxy_host_from_snapshot, proxy_hosts_from_snapshot, ProxyHostResponse,
+};
+pub use runtime_metrics_http::handle_metrics_http;
+use runtime_metrics_read_model::metrics_summary_json;
+pub use stateful_session_http::{handle_stateful_http_request, AdminHttpRuntimeContext};
+pub use status_http::{handle_status_http, handle_status_http_with_resource};
+pub use support_bundle_api::*;
+pub use trust_bundle_http::handle_trust_bundle_http;
 
 /// Foundation smoke helper.
 pub fn crate_name() -> &'static str {
@@ -40,815 +119,9 @@ pub fn crate_name() -> &'static str {
 pub const API_VERSION_PREFIX: &str = "/api/v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SupportBundleResponse {
-    pub archive_id: String,
-    pub digest_sha256: String,
-    pub collected_artifacts: Vec<String>,
-    pub omitted_artifacts: Vec<String>,
-    pub total_bytes: u64,
-}
-
-/// Creates a bundle with the fixed product allowlist; caller-controlled paths,
-/// artifact lists, bounds, service actions, and archive locations are not accepted.
-pub fn create_support_bundle<C: SupportBundleCollector>(
-    sessions: &SessionStore,
-    session_id: Option<&str>,
-    csrf_token: Option<&str>,
-    collector: C,
-) -> Result<SupportBundleResponse, AppError> {
-    require_session(sessions, session_id)?;
-    let session_id = session_id.expect("session checked above");
-    require_csrf(sessions, session_id, csrf_token)?;
-    let mut use_case = CollectSupportBundleUseCase::new(collector);
-    let report = use_case.execute(SupportBundleRequest {
-        artifacts: vec![
-            SupportBundleArtifact::VersionManifest,
-            SupportBundleArtifact::MaskedConfig,
-            SupportBundleArtifact::BoundedProductLog,
-            SupportBundleArtifact::HealthSummary,
-            SupportBundleArtifact::ResourceSummary,
-            SupportBundleArtifact::AuditSummary,
-        ],
-        bounds: default_support_bundle_bounds(),
-    })?;
-    Ok(SupportBundleResponse {
-        archive_id: report.archive.archive_id,
-        digest_sha256: hex_encode(&report.archive.digest_sha256),
-        collected_artifacts: report
-            .collected_artifacts
-            .into_iter()
-            .map(support_artifact_name)
-            .map(str::to_string)
-            .collect(),
-        omitted_artifacts: report
-            .omissions
-            .into_iter()
-            .map(|omission| support_artifact_name(omission.artifact).to_string())
-            .collect(),
-        total_bytes: report.total_bytes,
-    })
-}
-
-pub fn handle_support_bundle_http<C: SupportBundleCollector>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    collector: C,
-) -> AdminHttpResponse {
-    match create_support_bundle(sessions, request.session_id.as_deref(), request.csrf_token.as_deref(), collector) {
-        Ok(response) => AdminHttpResponse::json(200, format!(
-            "{{\"archive_id\":\"{}\",\"digest_sha256\":\"{}\",\"collected_artifacts\":[{}],\"omitted_artifacts\":[{}],\"total_bytes\":{}}}",
-            json_escape(&response.archive_id), response.digest_sha256,
-            response.collected_artifacts.iter().map(|value| format!("\"{}\"", json_escape(value))).collect::<Vec<_>>().join(","),
-            response.omitted_artifacts.iter().map(|value| format!("\"{}\"", json_escape(value))).collect::<Vec<_>>().join(","), response.total_bytes)),
-        Err(error) => {
-            let status = match error.code { ErrorCode::AdminAuthRequired => 401, ErrorCode::AdminCsrfRequired => 403, _ => 422 };
-            AdminHttpResponse::from_error(status, error, &request.request_id)
-        }
-    }
-}
-
-fn support_artifact_name(artifact: SupportBundleArtifact) -> &'static str {
-    match artifact {
-        SupportBundleArtifact::VersionManifest => "version_manifest",
-        SupportBundleArtifact::MaskedConfig => "masked_config",
-        SupportBundleArtifact::BoundedProductLog => "bounded_product_log",
-        SupportBundleArtifact::HealthSummary => "health_summary",
-        SupportBundleArtifact::ResourceSummary => "resource_summary",
-        SupportBundleArtifact::AuditSummary => "audit_summary",
-    }
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApiErrorResponse {
-    pub code: String,
-    pub message: String,
-    pub hint: String,
-    pub request_id: String,
-}
-
-impl ApiErrorResponse {
-    pub fn from_error(error: AppError, request_id: impl Into<String>) -> Self {
-        let code = error.code.as_str().to_string();
-        let hint = error.code.default_user_message().to_string();
-        Self {
-            code,
-            message: error.message,
-            hint,
-            request_id: request_id.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiResponse<T> {
     pub request_id: String,
     pub data: T,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Session {
-    pub session_id: String,
-    pub csrf_token: String,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct SessionStore {
-    sessions: BTreeMap<String, String>,
-}
-
-impl SessionStore {
-    pub fn insert(&mut self, session: Session) {
-        self.sessions.insert(session.session_id, session.csrf_token);
-    }
-
-    pub fn remove(&mut self, session_id: &str) {
-        self.sessions.remove(session_id);
-    }
-
-    pub fn verify(&self, session_id: &str) -> bool {
-        self.sessions.contains_key(session_id)
-    }
-
-    pub fn verify_csrf(&self, session_id: &str, csrf_token: &str) -> bool {
-        self.sessions
-            .get(session_id)
-            .is_some_and(|known| known == csrf_token)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdminAuthenticator {
-    password_hash: String,
-    next_session: u64,
-    failed_attempts: u32,
-    max_failed_attempts: u32,
-}
-
-impl AdminAuthenticator {
-    pub fn new(password_hash: impl Into<String>) -> Self {
-        Self {
-            password_hash: password_hash.into(),
-            next_session: 1,
-            failed_attempts: 0,
-            max_failed_attempts: 5,
-        }
-    }
-
-    pub fn login(
-        &mut self,
-        password_hash: &str,
-        sessions: &mut SessionStore,
-    ) -> Result<Session, AppError> {
-        if self.failed_attempts >= self.max_failed_attempts {
-            return Err(AppError::new(
-                ErrorCode::AdminInvalidCredentials,
-                "too many failed attempts",
-            ));
-        }
-
-        if password_hash != self.password_hash {
-            self.failed_attempts += 1;
-            return Err(AppError::new(
-                ErrorCode::AdminInvalidCredentials,
-                "invalid credentials",
-            ));
-        }
-
-        self.failed_attempts = 0;
-        let session = Session {
-            session_id: format!("session-{}", self.next_session),
-            csrf_token: format!("csrf-{}", self.next_session),
-        };
-        self.next_session += 1;
-        sessions.insert(session.clone());
-        Ok(session)
-    }
-}
-
-pub fn require_session(sessions: &SessionStore, session_id: Option<&str>) -> Result<(), AppError> {
-    let Some(session_id) = session_id else {
-        return Err(AppError::new(
-            ErrorCode::AdminAuthRequired,
-            "admin session is required",
-        ));
-    };
-
-    if sessions.verify(session_id) {
-        Ok(())
-    } else {
-        Err(AppError::new(
-            ErrorCode::AdminAuthRequired,
-            "admin session is invalid",
-        ))
-    }
-}
-
-pub fn require_csrf(
-    sessions: &SessionStore,
-    session_id: &str,
-    csrf_token: Option<&str>,
-) -> Result<(), AppError> {
-    let Some(csrf_token) = csrf_token else {
-        return Err(AppError::new(
-            ErrorCode::AdminCsrfRequired,
-            "csrf token is required",
-        ));
-    };
-
-    if sessions.verify_csrf(session_id, csrf_token) {
-        Ok(())
-    } else {
-        Err(AppError::new(
-            ErrorCode::AdminCsrfRequired,
-            "csrf token is invalid",
-        ))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusResponse {
-    pub version_prefix: String,
-    pub current_revision_id: String,
-    pub desired_revision_id: String,
-    pub active_revision_id: String,
-    pub restart_required: bool,
-    pub activation_state: String,
-    pub desired_resource_policy: ResourcePolicyResponse,
-    pub active_resource_policy: ResourcePolicyResponse,
-    pub live_resource_status: Option<LiveResourceStatusResponse>,
-    pub routes: usize,
-    pub services: usize,
-    pub certificates: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LiveResourceStatusResponse {
-    pub revision_id: String,
-    pub generation: u64,
-    pub used_payload_bytes: usize,
-    pub payload_limit_bytes: usize,
-    pub active_connections: usize,
-    pub pressure: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResourcePolicyResponse {
-    pub max_connections: usize,
-    pub max_inflight_payload_bytes: usize,
-}
-
-pub fn status_response(snapshot: &ConfigSnapshot) -> StatusResponse {
-    status_response_with_active(snapshot, snapshot)
-}
-
-pub fn status_response_with_active(
-    desired: &ConfigSnapshot,
-    active: &ConfigSnapshot,
-) -> StatusResponse {
-    status_response_with_active_and_resource(desired, active, None)
-}
-
-pub fn status_response_with_active_and_resource(
-    desired: &ConfigSnapshot,
-    active: &ConfigSnapshot,
-    live_resource_status: Option<edge_ports::RuntimeResourceStatusSnapshot>,
-) -> StatusResponse {
-    let activation_state = config_activation_state(active, desired);
-    StatusResponse {
-        version_prefix: API_VERSION_PREFIX.to_string(),
-        current_revision_id: desired.revision_id.as_str().to_string(),
-        desired_revision_id: desired.revision_id.as_str().to_string(),
-        active_revision_id: active.revision_id.as_str().to_string(),
-        restart_required: activation_state == ConfigActivationState::PendingRestart,
-        activation_state: activation_state.as_str().to_string(),
-        desired_resource_policy: ResourcePolicyResponse {
-            max_connections: desired.runtime.max_connections,
-            max_inflight_payload_bytes: desired.runtime.max_inflight_payload_bytes,
-        },
-        active_resource_policy: ResourcePolicyResponse {
-            max_connections: active.runtime.max_connections,
-            max_inflight_payload_bytes: active.runtime.max_inflight_payload_bytes,
-        },
-        live_resource_status: live_resource_status.map(|status| LiveResourceStatusResponse {
-            revision_id: status.revision_id.as_str().to_string(),
-            generation: status.generation,
-            used_payload_bytes: status.used_payload_bytes,
-            payload_limit_bytes: status.payload_limit_bytes,
-            active_connections: status.active_connections,
-            pressure: status.pressure.as_str().to_string(),
-        }),
-        routes: desired.routes.len(),
-        services: desired.services.len(),
-        certificates: desired
-            .routes
-            .iter()
-            .filter(|route| route.certificate_ref.is_some())
-            .count(),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HealthResponse {
-    pub status: String,
-    pub current_revision_id: String,
-    pub routes: usize,
-    pub services: usize,
-}
-
-pub fn health_response(snapshot: &ConfigSnapshot) -> HealthResponse {
-    HealthResponse {
-        status: "ok".to_string(),
-        current_revision_id: snapshot.revision_id.as_str().to_string(),
-        routes: snapshot.routes.len(),
-        services: snapshot.services.len(),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpstreamHealthStatusItem {
-    pub service_id: String,
-    pub upstream_id: String,
-    pub status: UpstreamAvailability,
-    pub drain_state: Option<RuntimeDrainState>,
-    pub connection_count: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpstreamHealthStatusResponse {
-    pub revision_id: String,
-    pub generation: u64,
-    pub upstreams: Vec<UpstreamHealthStatusItem>,
-}
-
-pub fn upstream_health_status_response(
-    snapshot: HealthAvailabilitySnapshot,
-    runtime: Option<RuntimeUpstreamStatusSnapshot>,
-) -> UpstreamHealthStatusResponse {
-    let runtime = runtime.map(|snapshot| {
-        snapshot
-            .upstreams
-            .into_iter()
-            .map(|item| (item.key, (item.state, item.connection_count)))
-            .collect::<BTreeMap<_, _>>()
-    });
-    UpstreamHealthStatusResponse {
-        revision_id: snapshot.revision_id.as_str().to_string(),
-        generation: snapshot.generation.0,
-        upstreams: snapshot
-            .entries
-            .into_iter()
-            .map(|(key, status)| {
-                let drain = runtime.as_ref().and_then(|items| items.get(&key)).copied();
-                UpstreamHealthStatusItem {
-                    service_id: key.service_id.as_str().to_string(),
-                    upstream_id: key.upstream_id.as_str().to_string(),
-                    status,
-                    drain_state: drain.map(|value| value.0),
-                    connection_count: drain.map(|value| value.1),
-                }
-            })
-            .collect(),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdminHttpMethod {
-    Get,
-    Post,
-    Patch,
-    Delete,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdminHttpRequest {
-    pub method: AdminHttpMethod,
-    pub path: String,
-    pub request_id: String,
-    pub session_id: Option<String>,
-    pub csrf_token: Option<String>,
-    pub body: String,
-}
-
-impl AdminHttpRequest {
-    pub fn new(
-        method: AdminHttpMethod,
-        path: impl Into<String>,
-        request_id: impl Into<String>,
-    ) -> Self {
-        Self {
-            method,
-            path: path.into(),
-            request_id: request_id.into(),
-            session_id: None,
-            csrf_token: None,
-            body: String::new(),
-        }
-    }
-
-    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
-        self.session_id = Some(session_id.into());
-        self
-    }
-
-    pub fn with_csrf_token(mut self, csrf_token: impl Into<String>) -> Self {
-        self.csrf_token = Some(csrf_token.into());
-        self
-    }
-
-    pub fn with_body(mut self, body: impl Into<String>) -> Self {
-        self.body = body.into();
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdminHttpResponse {
-    pub status_code: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: String,
-    pub error_code: Option<String>,
-}
-
-impl AdminHttpResponse {
-    pub fn from_error(status_code: u16, error: AppError, request_id: &str) -> Self {
-        error_response(status_code, error, request_id)
-    }
-
-    fn json(status_code: u16, body: String) -> Self {
-        Self {
-            status_code,
-            headers: vec![("content-type".to_string(), "application/json".to_string())],
-            body,
-            error_code: None,
-        }
-    }
-
-    fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers.push((name.into(), value.into()));
-        self
-    }
-
-    fn with_error_code(mut self, error_code: impl Into<String>) -> Self {
-        self.error_code = Some(error_code.into());
-        self
-    }
-}
-
-pub fn parse_admin_http_request(
-    raw: &str,
-    fallback_request_id: impl Into<String>,
-) -> Result<AdminHttpRequest, AppError> {
-    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw, ""));
-    let mut lines = head.lines();
-    let request_line = lines.next().ok_or_else(|| {
-        AppError::new(ErrorCode::HttpMalformedRequest, "missing HTTP request line")
-    })?;
-    let mut request_parts = request_line.split_whitespace();
-    let method = parse_http_method(request_parts.next())?;
-    let path = request_parts
-        .next()
-        .ok_or_else(|| AppError::new(ErrorCode::HttpMalformedRequest, "missing HTTP path"))?;
-    let version = request_parts
-        .next()
-        .ok_or_else(|| AppError::new(ErrorCode::HttpMalformedRequest, "missing HTTP version"))?;
-    if version != "HTTP/1.1" && version != "HTTP/1.0" {
-        return Err(AppError::new(
-            ErrorCode::HttpMalformedRequest,
-            "unsupported HTTP version",
-        ));
-    }
-
-    let mut request_id = fallback_request_id.into();
-    let mut session_id = None;
-    let mut csrf_token = None;
-    for line in lines {
-        let Some((name, value)) = line.split_once(':') else {
-            return Err(AppError::new(
-                ErrorCode::HttpMalformedRequest,
-                "malformed HTTP header",
-            ));
-        };
-        let name = name.trim();
-        let value = value.trim();
-        if name.eq_ignore_ascii_case("x-request-id") && !value.is_empty() {
-            request_id = value.to_string();
-        } else if name.eq_ignore_ascii_case("x-csrf-token") && !value.is_empty() {
-            csrf_token = Some(value.to_string());
-        } else if name.eq_ignore_ascii_case("cookie") {
-            session_id = cookie_value(value, "sponzey_session").map(str::to_string);
-        }
-    }
-
-    Ok(AdminHttpRequest {
-        method,
-        path: path.to_string(),
-        request_id,
-        session_id,
-        csrf_token,
-        body: body.to_string(),
-    })
-}
-
-pub fn render_admin_http_response(response: &AdminHttpResponse) -> String {
-    let mut rendered = format!(
-        "HTTP/1.1 {} {}\r\ncontent-length: {}\r\n",
-        response.status_code,
-        status_reason(response.status_code),
-        response.body.len()
-    );
-    for (name, value) in &response.headers {
-        rendered.push_str(name);
-        rendered.push_str(": ");
-        rendered.push_str(value);
-        rendered.push_str("\r\n");
-    }
-    rendered.push_str("\r\n");
-    rendered.push_str(&response.body);
-    rendered
-}
-
-fn parse_http_method(method: Option<&str>) -> Result<AdminHttpMethod, AppError> {
-    match method {
-        Some("GET") => Ok(AdminHttpMethod::Get),
-        Some("POST") => Ok(AdminHttpMethod::Post),
-        Some("PATCH") => Ok(AdminHttpMethod::Patch),
-        Some("DELETE") => Ok(AdminHttpMethod::Delete),
-        Some(_) => Err(AppError::new(
-            ErrorCode::HttpMalformedRequest,
-            "unsupported HTTP method",
-        )),
-        None => Err(AppError::new(
-            ErrorCode::HttpMalformedRequest,
-            "missing HTTP method",
-        )),
-    }
-}
-
-fn cookie_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {
-    header.split(';').find_map(|part| {
-        let (candidate, value) = part.trim().split_once('=')?;
-        (candidate == name).then_some(value)
-    })
-}
-
-fn status_reason(status_code: u16) -> &'static str {
-    match status_code {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        409 => "Conflict",
-        501 => "Not Implemented",
-        503 => "Service Unavailable",
-        500 => "Internal Server Error",
-        _ => "Error",
-    }
-}
-
-pub struct AdminHttpContext<'a> {
-    pub snapshot: &'a ConfigSnapshot,
-    pub sessions: &'a SessionStore,
-}
-
-pub struct AdminHttpRuntimeContext<'a> {
-    pub snapshot: &'a ConfigSnapshot,
-    pub sessions: &'a mut SessionStore,
-    pub authenticator: &'a mut Option<AdminAuthenticator>,
-    pub secrets: &'a mut dyn SecretStore,
-}
-
-pub fn handle_stateful_http_request(
-    request: &AdminHttpRequest,
-    context: AdminHttpRuntimeContext<'_>,
-) -> AdminHttpResponse {
-    match (request.method, request.path.as_str()) {
-        (AdminHttpMethod::Post, "/api/v1/setup") => {
-            handle_setup(request, context.authenticator, context.secrets)
-        }
-        (AdminHttpMethod::Post, "/api/v1/login") => {
-            let Some(authenticator) = context.authenticator.as_mut() else {
-                return setup_required_response(&request.request_id);
-            };
-            handle_login(request, authenticator, context.sessions)
-        }
-        (AdminHttpMethod::Post, "/api/v1/logout") => {
-            if context.authenticator.is_none() {
-                return setup_required_response(&request.request_id);
-            }
-            handle_logout(request, context.sessions)
-        }
-        _ if context.authenticator.is_none()
-            && is_mutation_route(request.method, &request.path) =>
-        {
-            setup_required_response(&request.request_id)
-        }
-        _ => handle_http_request(
-            request,
-            AdminHttpContext {
-                snapshot: context.snapshot,
-                sessions: context.sessions,
-            },
-        ),
-    }
-}
-
-pub fn handle_http_request(
-    request: &AdminHttpRequest,
-    context: AdminHttpContext<'_>,
-) -> AdminHttpResponse {
-    match (request.method, request.path.as_str()) {
-        (AdminHttpMethod::Get, "/api/v1/status") => {
-            handle_status_http(context.snapshot, context.snapshot)
-        }
-        (AdminHttpMethod::Get, "/api/v1/health") => handle_health_http(request, context.snapshot),
-        (AdminHttpMethod::Get, "/api/v1/config") => {
-            handle_config_get_http(request, context.sessions, context.snapshot)
-        }
-        (AdminHttpMethod::Post, "/api/v1/config/validate") => {
-            handle_config_validate_http(request, context.sessions)
-        }
-        (AdminHttpMethod::Post, "/api/v1/config/diff") => {
-            handle_config_diff_http(request, context.sessions, context.snapshot)
-        }
-        (AdminHttpMethod::Get, "/api/v1/proxy-hosts") => {
-            handle_proxy_host_list_http(request, context.sessions, context.snapshot)
-        }
-        (AdminHttpMethod::Get, path) if path.starts_with("/api/v1/proxy-hosts/") => {
-            handle_proxy_host_get_http(request, context.sessions, context.snapshot)
-        }
-        _ if is_mutation_route(request.method, &request.path) => {
-            if let Err(error) = require_session(context.sessions, request.session_id.as_deref()) {
-                return error_response(401, error, &request.request_id);
-            }
-            if let Err(error) = require_csrf(
-                context.sessions,
-                request.session_id.as_deref().unwrap_or_default(),
-                request.csrf_token.as_deref(),
-            ) {
-                return error_response(403, error, &request.request_id);
-            }
-            error_response(
-                501,
-                AppError::new(
-                    ErrorCode::AdminEndpointNotImplemented,
-                    "http mutation route is not bound yet",
-                ),
-                &request.request_id,
-            )
-        }
-        _ => error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        ),
-    }
-}
-
-pub fn handle_status_http(desired: &ConfigSnapshot, active: &ConfigSnapshot) -> AdminHttpResponse {
-    handle_status_http_with_resource(desired, active, None)
-}
-
-pub fn handle_status_http_with_resource(
-    desired: &ConfigSnapshot,
-    active: &ConfigSnapshot,
-    live_resource_status: Option<edge_ports::RuntimeResourceStatusSnapshot>,
-) -> AdminHttpResponse {
-    AdminHttpResponse::json(
-        200,
-        status_response_json(&status_response_with_active_and_resource(
-            desired,
-            active,
-            live_resource_status,
-        )),
-    )
-}
-
-fn handle_setup(
-    request: &AdminHttpRequest,
-    authenticator: &mut Option<AdminAuthenticator>,
-    secrets: &mut dyn SecretStore,
-) -> AdminHttpResponse {
-    if authenticator.is_some() {
-        return error_response(
-            409,
-            AppError::new(
-                ErrorCode::AdminSetupAlreadyComplete,
-                "admin setup is already complete",
-            ),
-            &request.request_id,
-        );
-    }
-    match secrets.load_secret("admin-password-hash") {
-        Ok(Some(_)) => {
-            return error_response(
-                409,
-                AppError::new(
-                    ErrorCode::AdminSetupAlreadyComplete,
-                    "admin setup is already complete",
-                ),
-                &request.request_id,
-            );
-        }
-        Ok(None) => {}
-        Err(error) => return error_response(500, error, &request.request_id),
-    }
-
-    let Some(password_hash) = json_string_field(&request.body, "password_hash") else {
-        return error_response(
-            400,
-            AppError::new(
-                ErrorCode::HttpMalformedRequest,
-                "setup request requires password_hash",
-            ),
-            &request.request_id,
-        );
-    };
-    if let Err(error) = secrets.save_secret(SecretRecord {
-        name: "admin-password-hash".to_string(),
-        value: password_hash.clone(),
-    }) {
-        return error_response(500, error, &request.request_id);
-    }
-    *authenticator = Some(AdminAuthenticator::new(password_hash));
-    AdminHttpResponse::json(200, "{\"setup_complete\":true}".to_string())
-}
-
-fn handle_login(
-    request: &AdminHttpRequest,
-    authenticator: &mut AdminAuthenticator,
-    sessions: &mut SessionStore,
-) -> AdminHttpResponse {
-    let Some(password_hash) = json_string_field(&request.body, "password_hash") else {
-        return error_response(
-            400,
-            AppError::new(
-                ErrorCode::HttpMalformedRequest,
-                "login request requires password_hash",
-            ),
-            &request.request_id,
-        );
-    };
-    match authenticator.login(&password_hash, sessions) {
-        Ok(session) => {
-            let body = login_response_json(&session);
-            AdminHttpResponse::json(200, body)
-                .with_header("set-cookie", session_cookie_header(&session.session_id))
-        }
-        Err(error) => error_response(401, error, &request.request_id),
-    }
-}
-
-fn handle_logout(request: &AdminHttpRequest, sessions: &mut SessionStore) -> AdminHttpResponse {
-    let Some(session_id) = request.session_id.as_deref() else {
-        return error_response(
-            401,
-            AppError::new(ErrorCode::AdminAuthRequired, "admin session is required"),
-            &request.request_id,
-        );
-    };
-    if let Err(error) = require_session(sessions, Some(session_id)) {
-        return error_response(401, error, &request.request_id);
-    }
-    if let Err(error) = require_csrf(sessions, session_id, request.csrf_token.as_deref()) {
-        return error_response(403, error, &request.request_id);
-    }
-    sessions.remove(session_id);
-    AdminHttpResponse::json(200, "{\"logged_out\":true}".to_string())
-        .with_header("set-cookie", expired_session_cookie_header())
-}
-
-fn setup_required_response(request_id: &str) -> AdminHttpResponse {
-    error_response(
-        403,
-        AppError::new(
-            ErrorCode::AdminSetupRequired,
-            "admin setup is required before login",
-        ),
-        request_id,
-    )
-}
-
-fn is_mutation_route(method: AdminHttpMethod, path: &str) -> bool {
-    matches!(
-        (method, path),
-        (AdminHttpMethod::Post, "/api/v1/config/apply")
-            | (AdminHttpMethod::Post, "/api/v1/config/rollback")
-            | (AdminHttpMethod::Post, "/api/v1/proxy-hosts")
-            | (AdminHttpMethod::Post, "/api/v1/trust-bundles")
-            | (AdminHttpMethod::Post, "/api/v1/logout")
-            | (AdminHttpMethod::Patch, _)
-            | (AdminHttpMethod::Delete, _)
-    ) || (method == AdminHttpMethod::Post && is_certificate_mutation_path(path))
-}
-
-fn is_certificate_mutation_path(path: &str) -> bool {
-    path.starts_with("/api/v1/certificates/")
-        && (path.ends_with("/issue") || path.ends_with("/renew") || path.ends_with("/import"))
 }
 
 pub trait TrustBundleAdminService {
@@ -862,614 +135,6 @@ pub trait TrustBundleAdminService {
     fn delete(&mut self, trust_bundle_ref: TrustBundleRef) -> Result<(), AppError>;
 }
 
-pub fn handle_trust_bundle_http<S: TrustBundleAdminService>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    service: &mut S,
-) -> AdminHttpResponse {
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-    let mutation = matches!(
-        request.method,
-        AdminHttpMethod::Post | AdminHttpMethod::Delete
-    );
-    if mutation {
-        if let Err(error) = require_csrf(
-            sessions,
-            request.session_id.as_deref().unwrap_or_default(),
-            request.csrf_token.as_deref(),
-        ) {
-            return error_response(403, error, &request.request_id);
-        }
-    }
-    let result = match (request.method, request.path.as_str()) {
-        (AdminHttpMethod::Get, "/api/v1/trust-bundles") => {
-            service.list().map(|items| trust_bundle_list_json(&items))
-        }
-        (AdminHttpMethod::Post, "/api/v1/trust-bundles") => {
-            let Some(reference) = json_string_field(&request.body, "trust_bundle_ref") else {
-                return error_response(
-                    400,
-                    AppError::new(
-                        ErrorCode::HttpMalformedRequest,
-                        "trust bundle ref is required",
-                    ),
-                    &request.request_id,
-                );
-            };
-            let Some(material) = json_string_field(&request.body, "encoded_material") else {
-                return error_response(
-                    400,
-                    AppError::new(
-                        ErrorCode::HttpMalformedRequest,
-                        "trust bundle material is required",
-                    ),
-                    &request.request_id,
-                );
-            };
-            if material.len() > 384 * 1024 {
-                return error_response(
-                    400,
-                    AppError::new(
-                        ErrorCode::TrustBundleLimitExceeded,
-                        "trust bundle input is too large",
-                    ),
-                    &request.request_id,
-                );
-            }
-            let reference = match TrustBundleRef::parse(&reference) {
-                Ok(reference) => reference,
-                Err(error) => {
-                    return error_response(
-                        400,
-                        AppError::new(error.code, error.message),
-                        &request.request_id,
-                    )
-                }
-            };
-            service
-                .import(&request.request_id, reference, material.into_bytes())
-                .map(|metadata| trust_bundle_metadata_json(&metadata))
-        }
-        (AdminHttpMethod::Delete, path) if path.starts_with("/api/v1/trust-bundles/") => {
-            let raw = path.trim_start_matches("/api/v1/trust-bundles/");
-            let reference = match TrustBundleRef::parse(raw) {
-                Ok(reference) => reference,
-                Err(error) => {
-                    return error_response(
-                        400,
-                        AppError::new(error.code, error.message),
-                        &request.request_id,
-                    )
-                }
-            };
-            service
-                .delete(reference)
-                .map(|()| "{\"deleted\":true}".to_string())
-        }
-        _ => Err(AppError::new(
-            ErrorCode::AdminRouteNotFound,
-            "admin http route not found",
-        )),
-    };
-    match result {
-        Ok(body) => AdminHttpResponse::json(200, body),
-        Err(error) => error_response(http_status_for_error(&error), error, &request.request_id),
-    }
-}
-
-fn trust_bundle_metadata_json(metadata: &TrustBundleMetadata) -> String {
-    format!(
-        "{{\"trust_bundle_ref\":\"{}\",\"certificate_count\":{},\"imported_at_epoch_seconds\":{}}}",
-        json_escape(metadata.trust_bundle_ref.as_str()),
-        metadata.certificate_count,
-        metadata.imported_at_epoch_seconds
-    )
-}
-
-fn trust_bundle_list_json(items: &[TrustBundleMetadata]) -> String {
-    format!(
-        "{{\"trust_bundles\":[{}]}}",
-        items
-            .iter()
-            .map(trust_bundle_metadata_json)
-            .collect::<Vec<_>>()
-            .join(",")
-    )
-}
-
-fn error_response(status_code: u16, error: AppError, request_id: &str) -> AdminHttpResponse {
-    let error_code = error.code.as_str().to_string();
-    AdminHttpResponse::json(
-        status_code,
-        error_response_json(&ApiErrorResponse::from_error(error, request_id)),
-    )
-    .with_error_code(error_code)
-}
-
-fn http_status_for_error(error: &AppError) -> u16 {
-    match error.code {
-        ErrorCode::AdminAuthRequired | ErrorCode::AdminInvalidCredentials => 401,
-        ErrorCode::AdminCsrfRequired | ErrorCode::AdminSetupRequired => 403,
-        ErrorCode::AdminRouteNotFound
-        | ErrorCode::CertificateNotFound
-        | ErrorCode::ConfigTrustBundleNotFound => 404,
-        ErrorCode::AdminSetupAlreadyComplete
-        | ErrorCode::ConfigRevisionNotFound
-        | ErrorCode::TrustBundleAlreadyExists
-        | ErrorCode::TrustBundleReferenced => 409,
-        ErrorCode::AdminEndpointNotImplemented => 501,
-        ErrorCode::AcmeTermsNotAccepted
-        | ErrorCode::AuditCursorInvalid
-        | ErrorCode::AuditRecordInvalid
-        | ErrorCode::CertificateInvalid
-        | ErrorCode::TrustBundleInvalid
-        | ErrorCode::TrustBundleLimitExceeded => 400,
-        ErrorCode::AcmeChallengeFailed => 500,
-        ErrorCode::ConfigStoreFailed
-        | ErrorCode::TrustBundleStoreFailed
-        | ErrorCode::RuntimeCommandRejected
-        | ErrorCode::RuntimeHealthUnavailable
-        | ErrorCode::InternalBug => 500,
-        code if code.as_str().starts_with("CONFIG_") => 400,
-        code if code.as_str().starts_with("HTTP_") => 400,
-        _ => 500,
-    }
-}
-
-fn status_response_json(response: &StatusResponse) -> String {
-    let live_resource_status = response.live_resource_status.as_ref().map_or_else(
-        || "null".to_string(),
-        |status| {
-            format!(
-                "{{\"revision_id\":\"{}\",\"generation\":{},\"used_payload_bytes\":{},\"payload_limit_bytes\":{},\"active_connections\":{},\"pressure\":\"{}\"}}",
-                json_escape(&status.revision_id),
-                status.generation,
-                status.used_payload_bytes,
-                status.payload_limit_bytes,
-                status.active_connections,
-                json_escape(&status.pressure),
-            )
-        },
-    );
-    format!(
-        "{{\"version_prefix\":\"{}\",\"current_revision_id\":\"{}\",\"desired_revision_id\":\"{}\",\"active_revision_id\":\"{}\",\"restart_required\":{},\"activation_state\":\"{}\",\"desired_resource_policy\":{{\"max_connections\":{},\"max_inflight_payload_bytes\":{}}},\"active_resource_policy\":{{\"max_connections\":{},\"max_inflight_payload_bytes\":{}}},\"live_resource_status\":{},\"routes\":{},\"services\":{},\"certificates\":{}}}",
-        json_escape(&response.version_prefix),
-        json_escape(&response.current_revision_id),
-        json_escape(&response.desired_revision_id),
-        json_escape(&response.active_revision_id),
-        response.restart_required,
-        json_escape(&response.activation_state),
-        response.desired_resource_policy.max_connections,
-        response.desired_resource_policy.max_inflight_payload_bytes,
-        response.active_resource_policy.max_connections,
-        response.active_resource_policy.max_inflight_payload_bytes,
-        live_resource_status,
-        response.routes,
-        response.services,
-        response.certificates
-    )
-}
-
-fn health_response_json(response: &HealthResponse) -> String {
-    format!(
-        "{{\"status\":\"{}\",\"current_revision_id\":\"{}\",\"routes\":{},\"services\":{}}}",
-        json_escape(&response.status),
-        json_escape(&response.current_revision_id),
-        response.routes,
-        response.services
-    )
-}
-
-fn upstream_health_status_response_json(response: &UpstreamHealthStatusResponse) -> String {
-    let upstreams = response
-        .upstreams
-        .iter()
-        .map(|item| {
-            format!(
-                "{{\"service_id\":\"{}\",\"upstream_id\":\"{}\",\"status\":\"{}\",\"drain_state\":{},\"connection_count\":{}}}",
-                json_escape(&item.service_id),
-                json_escape(&item.upstream_id),
-                upstream_availability_name(item.status),
-                item.drain_state.map(runtime_drain_state_name).map(|value| format!("\"{value}\"")).unwrap_or_else(|| "null".to_string()),
-                item.connection_count.map(|value| value.to_string()).unwrap_or_else(|| "null".to_string())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(
-        "{{\"revision_id\":\"{}\",\"generation\":{},\"upstreams\":[{}]}}",
-        json_escape(&response.revision_id),
-        response.generation,
-        upstreams
-    )
-}
-
-fn runtime_drain_state_name(state: RuntimeDrainState) -> &'static str {
-    match state {
-        RuntimeDrainState::Active => "active",
-        RuntimeDrainState::Draining => "draining",
-        RuntimeDrainState::Drained => "drained",
-        RuntimeDrainState::Removed => "removed",
-    }
-}
-
-fn upstream_availability_name(status: UpstreamAvailability) -> &'static str {
-    match status {
-        UpstreamAvailability::Disabled => "disabled",
-        UpstreamAvailability::Unknown => "unknown",
-        UpstreamAvailability::Healthy => "healthy",
-        UpstreamAvailability::Unhealthy => "unhealthy",
-    }
-}
-
-fn login_response_json(session: &Session) -> String {
-    format!(
-        "{{\"csrf_token\":\"{}\"}}",
-        json_escape(&session.csrf_token)
-    )
-}
-
-fn error_response_json(response: &ApiErrorResponse) -> String {
-    format!(
-        "{{\"code\":\"{}\",\"message\":\"{}\",\"hint\":\"{}\",\"request_id\":\"{}\"}}",
-        json_escape(&response.code),
-        json_escape(&response.message),
-        json_escape(&response.hint),
-        json_escape(&response.request_id)
-    )
-}
-
-fn apply_response_json(response: &ApplyResponse) -> String {
-    format!(
-        "{{\"revision_id\":\"{}\",\"commands_sent\":{},\"restart_required\":{}}}",
-        json_escape(&response.revision_id),
-        response.commands_sent,
-        response.restart_required
-    )
-}
-
-fn proxy_host_list_response_json(proxy_hosts: &[ProxyHostResponse]) -> String {
-    let items = proxy_hosts
-        .iter()
-        .map(proxy_host_response_json)
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{{\"proxy_hosts\":[{items}]}}")
-}
-
-fn proxy_host_response_json(proxy_host: &ProxyHostResponse) -> String {
-    format!(
-        "{{\"id\":\"{}\",\"name\":\"{}\",\"domains\":{},\"path_prefix\":\"{}\",\"upstream_url\":\"{}\",\"upstreams\":{},\"health_check\":{},\"retry\":{},\"passive_health\":{},\"https_enabled\":{},\"letsencrypt_enabled\":{},\"redirect_http_to_https\":{},\"enabled\":{}}}",
-        json_escape(&proxy_host.id),
-        json_escape(&proxy_host.name),
-        json_string_array_json(&proxy_host.domains),
-        json_escape(&proxy_host.path_prefix),
-        json_escape(&proxy_host.upstream_url),
-        proxy_host_upstreams_json(&proxy_host.upstreams),
-        proxy_host_health_check_json(proxy_host.health_check.as_ref()),
-        proxy_host_retry_json(proxy_host.retry),
-        proxy_host_passive_health_json(proxy_host.passive_health),
-        proxy_host.https_enabled,
-        proxy_host.letsencrypt_enabled,
-        proxy_host.redirect_http_to_https,
-        proxy_host.enabled
-    )
-}
-
-fn proxy_host_upstreams_json(upstreams: &[ProxyHostUpstreamRequest]) -> String {
-    let items = upstreams
-        .iter()
-        .map(|upstream| {
-            format!(
-                "{{\"id\":\"{}\",\"url\":\"{}\",\"administrative_state\":\"{}\"}}",
-                json_escape(&upstream.id),
-                json_escape(&upstream.url),
-                match upstream.administrative_state {
-                    UpstreamAdministrativeState::Active => "active",
-                    UpstreamAdministrativeState::Draining => "draining",
-                }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("[{items}]")
-}
-
-fn proxy_host_retry_json(policy: RetryPolicy) -> String {
-    format!(
-        "{{\"enabled\":{},\"max_retries\":{},\"max_replay_bytes\":{}}}",
-        policy.enabled, policy.max_retries, policy.max_replay_bytes
-    )
-}
-
-fn proxy_host_passive_health_json(mode: PassiveHealthMode) -> String {
-    match mode {
-        PassiveHealthMode::Disabled => "{\"enabled\":false}".to_string(),
-        PassiveHealthMode::Enabled(policy) => format!(
-            "{{\"enabled\":true,\"failure_threshold\":{},\"ejection_ms\":{}}}",
-            policy.failure_threshold, policy.ejection_ms
-        ),
-    }
-}
-
-fn proxy_host_health_check_json(health: Option<&HttpHealthCheckPolicy>) -> String {
-    match health {
-        Some(health) => format!(
-            "{{\"enabled\":true,\"path\":\"{}\",\"interval_ms\":{},\"timeout_ms\":{},\"healthy_threshold\":{},\"unhealthy_threshold\":{},\"status_min\":{},\"status_max\":{}}}",
-            json_escape(&health.path),
-            health.interval_ms,
-            health.timeout_ms,
-            health.healthy_threshold,
-            health.unhealthy_threshold,
-            health.status_min,
-            health.status_max
-        ),
-        None => "{\"enabled\":false}".to_string(),
-    }
-}
-
-fn json_string_array_json(values: &[String]) -> String {
-    let items = values
-        .iter()
-        .map(|value| format!("\"{}\"", json_escape(value)))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("[{items}]")
-}
-
-fn certificate_list_response_json(certificates: &[CertificateStatus]) -> String {
-    let items = certificates
-        .iter()
-        .map(certificate_status_json)
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{{\"certificates\":[{items}]}}")
-}
-
-fn certificate_status_json(certificate: &CertificateStatus) -> String {
-    format!(
-        "{{\"certificate_ref\":\"{}\",\"domains\":{},\"source\":\"{}\",\"expired\":{},\"expiring_soon\":{},\"not_after_epoch_seconds\":{},\"private_key\":\"{}\"}}",
-        json_escape(certificate.certificate_ref.as_str()),
-        json_string_array_json(&certificate.domains),
-        json_escape(&certificate.source),
-        certificate.expired,
-        certificate.expiring_soon,
-        certificate.not_after_epoch_seconds,
-        json_escape(certificate.private_key_masked)
-    )
-}
-
-fn certificate_issue_outcome_json(outcome: &CertificateIssueOutcome, request_id: &str) -> String {
-    format!(
-        "{{\"request_id\":\"{}\",\"certificate_ref\":\"{}\",\"domains\":{},\"source\":\"{}\",\"not_after_epoch_seconds\":{},\"commands_sent\":{}}}",
-        json_escape(request_id),
-        json_escape(outcome.certificate_ref.as_str()),
-        json_string_array_json(&outcome.domains),
-        json_escape(&outcome.source),
-        outcome.not_after_epoch_seconds,
-        outcome.commands_sent
-    )
-}
-
-fn certificate_import_outcome_json(
-    outcome: &ManualCertificateImportOutcome,
-    request_id: &str,
-) -> String {
-    format!(
-        "{{\"request_id\":\"{}\",\"certificate_ref\":\"{}\",\"domains\":{},\"source\":\"{}\",\"not_after_epoch_seconds\":{},\"private_key\":\"{}\",\"state\":\"installed\",\"commands_sent\":{}}}",
-        json_escape(request_id),
-        json_escape(outcome.status.certificate_ref.as_str()),
-        json_string_array_json(&outcome.status.domains),
-        json_escape(&outcome.status.source),
-        outcome.status.not_after_epoch_seconds,
-        outcome.status.private_key_masked,
-        outcome.commands_sent
-    )
-}
-
-fn access_logs_response_json(events: &[AccessLogEvent]) -> String {
-    let items = events
-        .iter()
-        .map(access_log_event_json)
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{{\"access_logs\":[{items}]}}")
-}
-
-fn access_log_event_json(event: &AccessLogEvent) -> String {
-    format!(
-        "{{\"request_id\":\"{}\",\"revision_id\":\"{}\",\"route_id\":{},\"upstream_id\":{},\"status_code\":{},\"duration_ms\":{}}}",
-        json_escape(&event.request_id),
-        json_escape(&event.revision_id),
-        json_optional_string_json(event.route_id.as_deref()),
-        json_optional_string_json(event.upstream_id.as_deref()),
-        event.status_code,
-        event.duration_ms
-    )
-}
-
-fn error_logs_response_json(events: &[RecentErrorEvent]) -> String {
-    let items = events
-        .iter()
-        .map(error_log_event_json)
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{{\"error_logs\":[{items}]}}")
-}
-
-fn error_log_event_json(event: &RecentErrorEvent) -> String {
-    format!(
-        "{{\"request_id\":{},\"error_code\":\"{}\",\"message\":\"{}\"}}",
-        json_optional_string_json(event.request_id.as_deref()),
-        json_escape(&event.error_code),
-        json_escape(&event.message)
-    )
-}
-
-fn json_optional_string_json(value: Option<&str>) -> String {
-    match value {
-        Some(value) => format!("\"{}\"", json_escape(value)),
-        None => "null".to_string(),
-    }
-}
-
-fn config_response_json(snapshot: &ConfigSnapshot) -> String {
-    format!(
-        "{{\"revision_id\":\"{}\",\"config\":\"{}\"}}",
-        json_escape(snapshot.revision_id.as_str()),
-        json_escape(&render_mvp_config_snapshot(snapshot))
-    )
-}
-
-fn config_validation_response_json(errors: &[ValidationError]) -> String {
-    let items = errors
-        .iter()
-        .map(validation_error_json)
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{{\"valid\":{},\"errors\":[{}]}}", errors.is_empty(), items)
-}
-
-fn config_diff_response_json(diff: Option<&ConfigDiff>, errors: &[ValidationError]) -> String {
-    let empty = ConfigDiff {
-        added_routes: Vec::new(),
-        removed_routes: Vec::new(),
-        changed_upstreams: Vec::new(),
-    };
-    let diff = diff.unwrap_or(&empty);
-    let errors_json = errors
-        .iter()
-        .map(validation_error_json)
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(
-        "{{\"valid\":{},\"errors\":[{}],\"diff\":{{\"added_routes\":{},\"removed_routes\":{},\"changed_upstreams\":{}}}}}",
-        errors.is_empty(),
-        errors_json,
-        json_string_array_json(&diff.added_routes),
-        json_string_array_json(&diff.removed_routes),
-        json_string_array_json(&diff.changed_upstreams)
-    )
-}
-
-fn validation_error_json(error: &ValidationError) -> String {
-    format!(
-        "{{\"code\":\"{}\",\"message\":\"{}\",\"hint\":\"{}\"}}",
-        json_escape(error.code.as_str()),
-        json_escape(&error.message),
-        json_escape(error.code.default_user_message())
-    )
-}
-
-fn json_escape(value: &str) -> String {
-    let mut escaped = String::new();
-    for character in value.chars() {
-        match character {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            _ => escaped.push(character),
-        }
-    }
-    escaped
-}
-
-fn json_string_field(body: &str, field: &str) -> Option<String> {
-    let needle = format!("\"{field}\"");
-    let after_name = body.split_once(&needle)?.1;
-    let after_colon = after_name.split_once(':')?.1.trim_start();
-    let after_open = after_colon.strip_prefix('"')?;
-    let mut output = String::new();
-    let mut escaped = false;
-    for character in after_open.chars() {
-        if escaped {
-            push_json_escaped_character(&mut output, character)?;
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if character == '"' {
-            return Some(output);
-        } else {
-            output.push(character);
-        }
-    }
-    None
-}
-
-fn json_bool_field(body: &str, field: &str) -> Option<bool> {
-    let needle = format!("\"{field}\"");
-    let after_name = body.split_once(&needle)?.1;
-    let after_colon = after_name.split_once(':')?.1.trim_start();
-    if after_colon.starts_with("true") {
-        Some(true)
-    } else if after_colon.starts_with("false") {
-        Some(false)
-    } else {
-        None
-    }
-}
-
-fn json_string_array_field(body: &str, field: &str) -> Option<Vec<String>> {
-    let needle = format!("\"{field}\"");
-    let after_name = body.split_once(&needle)?.1;
-    let mut input = after_name.split_once(':')?.1.trim_start();
-    input = input.strip_prefix('[')?.trim_start();
-
-    let mut values = Vec::new();
-    loop {
-        input = input.trim_start();
-        if input.starts_with(']') {
-            return Some(values);
-        }
-        let parsed = parse_json_string_prefix(input)?;
-        values.push(parsed.0);
-        input = parsed.1.trim_start();
-        if let Some(remaining) = input.strip_prefix(',') {
-            input = remaining;
-        } else if input.starts_with(']') {
-            return Some(values);
-        } else {
-            return None;
-        }
-    }
-}
-
-fn parse_json_string_prefix(input: &str) -> Option<(String, &str)> {
-    let after_open = input.strip_prefix('"')?;
-    let mut output = String::new();
-    let mut escaped = false;
-    for (index, character) in after_open.char_indices() {
-        if escaped {
-            push_json_escaped_character(&mut output, character)?;
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if character == '"' {
-            return Some((output, &after_open[index + character.len_utf8()..]));
-        } else {
-            output.push(character);
-        }
-    }
-    None
-}
-
-fn push_json_escaped_character(output: &mut String, character: char) -> Option<()> {
-    output.push(match character {
-        '"' => '"',
-        '\\' => '\\',
-        '/' => '/',
-        'n' => '\n',
-        'r' => '\r',
-        't' => '\t',
-        _ => return None,
-    });
-    Some(())
-}
-
 fn session_cookie_header(session_id: &str) -> String {
     format!(
         "sponzey_session={}; Path=/; HttpOnly; Secure; SameSite=Strict",
@@ -1479,231 +144,6 @@ fn session_cookie_header(session_id: &str) -> String {
 
 fn expired_session_cookie_header() -> &'static str {
     "sponzey_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProxyHostRequest {
-    pub id: String,
-    pub name: String,
-    pub domains: Vec<String>,
-    pub path_prefix: String,
-    pub upstream_url: String,
-    pub upstreams: Vec<ProxyHostUpstreamRequest>,
-    pub health_check: Option<HttpHealthCheckPolicy>,
-    pub retry: RetryPolicy,
-    pub passive_health: PassiveHealthMode,
-    pub https_enabled: bool,
-    pub letsencrypt_enabled: bool,
-    pub redirect_http_to_https: bool,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProxyHostResponse {
-    pub id: String,
-    pub name: String,
-    pub domains: Vec<String>,
-    pub path_prefix: String,
-    pub upstream_url: String,
-    pub upstreams: Vec<ProxyHostUpstreamRequest>,
-    pub health_check: Option<HttpHealthCheckPolicy>,
-    pub retry: RetryPolicy,
-    pub passive_health: PassiveHealthMode,
-    pub https_enabled: bool,
-    pub letsencrypt_enabled: bool,
-    pub redirect_http_to_https: bool,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProxyHostUpstreamRequest {
-    pub id: String,
-    pub url: String,
-    pub administrative_state: UpstreamAdministrativeState,
-}
-
-pub fn proxy_host_from_request(request: ProxyHostRequest) -> ProxyHost {
-    ProxyHost {
-        id: ProxyHostId::new(request.id),
-        name: request.name,
-        domains: request.domains.iter().map(HostMatch::exact).collect(),
-        path_prefix: PathMatch::prefix(request.path_prefix),
-        upstream_url: request.upstream_url,
-        upstreams: request
-            .upstreams
-            .into_iter()
-            .map(|upstream| Upstream {
-                id: UpstreamId::new(upstream.id),
-                url: upstream.url,
-                administrative_state: upstream.administrative_state,
-                tls: edge_domain::UpstreamTlsPolicy::Disabled,
-            })
-            .collect(),
-        health_check: request
-            .health_check
-            .map(HealthCheckPolicy::Http)
-            .unwrap_or(HealthCheckPolicy::Disabled),
-        retry: request.retry,
-        passive_health: request.passive_health,
-        https_enabled: request.https_enabled,
-        letsencrypt_enabled: request.letsencrypt_enabled,
-        redirect_http_to_https: request.redirect_http_to_https,
-        enabled: request.enabled,
-    }
-}
-
-pub fn proxy_host_request_from_json(body: &str) -> Result<ProxyHostRequest, AppError> {
-    let value: serde_json::Value =
-        serde_json::from_str(body).map_err(|_| malformed_json_field("body"))?;
-    let upstreams = proxy_host_upstreams_from_json(&value)?;
-    let upstream_url = json_string_field(body, "upstream_url")
-        .or_else(|| upstreams.first().map(|upstream| upstream.url.clone()))
-        .ok_or_else(|| malformed_json_field("upstream_url or upstreams"))?;
-    Ok(ProxyHostRequest {
-        id: required_json_string(body, "id")?,
-        name: required_json_string(body, "name")?,
-        domains: required_json_string_array(body, "domains")?,
-        path_prefix: required_json_string(body, "path_prefix")?,
-        upstream_url,
-        upstreams,
-        health_check: proxy_host_health_check_from_json(&value)?,
-        retry: proxy_host_retry_from_json(&value)?,
-        passive_health: proxy_host_passive_health_from_json(&value)?,
-        https_enabled: required_json_bool(body, "https_enabled")?,
-        letsencrypt_enabled: required_json_bool(body, "letsencrypt_enabled")?,
-        redirect_http_to_https: required_json_bool(body, "redirect_http_to_https")?,
-        enabled: required_json_bool(body, "enabled")?,
-    })
-}
-
-fn proxy_host_upstreams_from_json(
-    value: &serde_json::Value,
-) -> Result<Vec<ProxyHostUpstreamRequest>, AppError> {
-    let Some(items) = value.get("upstreams") else {
-        return Ok(Vec::new());
-    };
-    let items = items
-        .as_array()
-        .ok_or_else(|| malformed_json_field("upstreams"))?;
-    items
-        .iter()
-        .map(|item| {
-            let id = item
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| malformed_json_field("upstreams.id"))?;
-            let url = item
-                .get("url")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| malformed_json_field("upstreams.url"))?;
-            Ok(ProxyHostUpstreamRequest {
-                id: id.to_string(),
-                url: url.to_string(),
-                administrative_state: match item
-                    .get("administrative_state")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("active")
-                {
-                    "active" => UpstreamAdministrativeState::Active,
-                    "draining" => UpstreamAdministrativeState::Draining,
-                    _ => return Err(malformed_json_field("upstreams.administrative_state")),
-                },
-            })
-        })
-        .collect()
-}
-
-fn proxy_host_retry_from_json(value: &serde_json::Value) -> Result<RetryPolicy, AppError> {
-    let Some(policy) = value.get("retry") else {
-        return Ok(RetryPolicy::default());
-    };
-    let enabled = policy
-        .get("enabled")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| malformed_json_field("retry.enabled"))?;
-    let max_retries = policy
-        .get("max_retries")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| malformed_json_field("retry.max_retries"))?
-        .try_into()
-        .map_err(|_| malformed_json_field("retry.max_retries"))?;
-    let max_replay_bytes = policy
-        .get("max_replay_bytes")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| malformed_json_field("retry.max_replay_bytes"))?;
-    Ok(RetryPolicy {
-        enabled,
-        max_retries,
-        max_replay_bytes,
-    })
-}
-
-fn proxy_host_passive_health_from_json(
-    value: &serde_json::Value,
-) -> Result<PassiveHealthMode, AppError> {
-    let Some(policy) = value.get("passive_health") else {
-        return Ok(PassiveHealthMode::Disabled);
-    };
-    let enabled = policy
-        .get("enabled")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| malformed_json_field("passive_health.enabled"))?;
-    if !enabled {
-        return Ok(PassiveHealthMode::Disabled);
-    }
-    let failure_threshold = policy
-        .get("failure_threshold")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| malformed_json_field("passive_health.failure_threshold"))?
-        .try_into()
-        .map_err(|_| malformed_json_field("passive_health.failure_threshold"))?;
-    let ejection_ms = policy
-        .get("ejection_ms")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| malformed_json_field("passive_health.ejection_ms"))?;
-    edge_domain::PassiveHealthPolicy::new(failure_threshold, ejection_ms)
-        .map(PassiveHealthMode::Enabled)
-        .map_err(|error| AppError::new(error.code, error.message))
-}
-
-fn proxy_host_health_check_from_json(
-    value: &serde_json::Value,
-) -> Result<Option<HttpHealthCheckPolicy>, AppError> {
-    let Some(health) = value.get("health_check") else {
-        return Ok(None);
-    };
-    let enabled = health
-        .get("enabled")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| malformed_json_field("health_check.enabled"))?;
-    if !enabled {
-        return Ok(None);
-    }
-    let string = |field: &str| {
-        health
-            .get(field)
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| malformed_json_field(field))
-    };
-    let integer = |field: &str| {
-        health
-            .get(field)
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| malformed_json_field(field))
-    };
-    let policy = HttpHealthCheckPolicy::new(
-        string("path")?,
-        integer("interval_ms")?,
-        integer("timeout_ms")?,
-        u32::try_from(integer("healthy_threshold")?)
-            .map_err(|_| malformed_json_field("healthy_threshold"))?,
-        u32::try_from(integer("unhealthy_threshold")?)
-            .map_err(|_| malformed_json_field("unhealthy_threshold"))?,
-        u16::try_from(integer("status_min")?).map_err(|_| malformed_json_field("status_min"))?,
-        u16::try_from(integer("status_max")?).map_err(|_| malformed_json_field("status_max"))?,
-    )
-    .map_err(|error| AppError::new(error.code, error.message))?;
-    Ok(Some(policy))
 }
 
 pub fn certificate_issue_request_from_json(body: &str) -> Result<AcmeOrderRequest, AppError> {
@@ -1775,79 +215,6 @@ fn optional_json_u64(body: &str, field: &str) -> Result<Option<u64>, AppError> {
         .map_err(|_| malformed_json_field(field))
 }
 
-pub fn proxy_hosts_from_snapshot(snapshot: &ConfigSnapshot) -> Vec<ProxyHostResponse> {
-    let mut proxy_hosts: Vec<_> = snapshot
-        .routes
-        .iter()
-        .filter_map(|route| proxy_host_response_from_generated_route(snapshot, route))
-        .collect();
-    proxy_hosts.sort_by(|left, right| left.id.cmp(&right.id));
-    proxy_hosts
-}
-
-pub fn proxy_host_from_snapshot(
-    snapshot: &ConfigSnapshot,
-    id: &ProxyHostId,
-) -> Result<ProxyHostResponse, AppError> {
-    proxy_hosts_from_snapshot(snapshot)
-        .into_iter()
-        .find(|proxy_host| proxy_host.id == id.as_str())
-        .ok_or_else(|| {
-            AppError::new(
-                ErrorCode::AdminRouteNotFound,
-                format!("proxy host not found: {}", id.as_str()),
-            )
-        })
-}
-
-fn proxy_host_response_from_generated_route(
-    snapshot: &ConfigSnapshot,
-    route: &Route,
-) -> Option<ProxyHostResponse> {
-    let id = route.id.as_str().strip_prefix("proxy-host-")?;
-    if id.is_empty() {
-        return None;
-    }
-    let service = snapshot
-        .services
-        .iter()
-        .find(|service| service.id == route.service_id)?;
-    let upstream = service.upstreams.first()?;
-    let path_prefix = route.route_match.paths.first()?;
-
-    Some(ProxyHostResponse {
-        id: id.to_string(),
-        name: id.to_string(),
-        domains: route
-            .route_match
-            .hosts
-            .iter()
-            .map(|host| host.as_str().to_string())
-            .collect(),
-        path_prefix: path_prefix.as_str().to_string(),
-        upstream_url: upstream.url.clone(),
-        upstreams: service
-            .upstreams
-            .iter()
-            .map(|upstream| ProxyHostUpstreamRequest {
-                id: upstream.id.as_str().to_string(),
-                url: upstream.url.clone(),
-                administrative_state: upstream.administrative_state,
-            })
-            .collect(),
-        health_check: match &service.policy.health_check {
-            HealthCheckPolicy::Disabled => None,
-            HealthCheckPolicy::Http(policy) => Some(policy.clone()),
-        },
-        retry: service.policy.retry,
-        passive_health: service.policy.passive_health,
-        https_enabled: route.certificate_ref.is_some(),
-        letsencrypt_enabled: route.certificate_resolver_id.is_some(),
-        redirect_http_to_https: route.redirect_http_to_https,
-        enabled: route.enabled,
-    })
-}
-
 fn required_json_string(body: &str, field: &str) -> Result<String, AppError> {
     json_string_field(body, field).ok_or_else(|| malformed_json_field(field))
 }
@@ -1865,31 +232,6 @@ fn malformed_json_field(field: &str) -> AppError {
         ErrorCode::HttpMalformedRequest,
         format!("request body requires JSON field `{field}`"),
     )
-}
-
-pub fn validate_config(snapshot: &ConfigSnapshot) -> ValidationReport {
-    ConfigValidator::default().validate_snapshot(snapshot)
-}
-
-pub fn validate_config_source(source: &str) -> Vec<ValidationError> {
-    match parse_valid_config_source(source, ConfigRevisionId::new("candidate")) {
-        Ok(_) => Vec::new(),
-        Err(errors) => errors,
-    }
-}
-
-pub fn parse_valid_config_source(
-    source: &str,
-    revision_id: ConfigRevisionId,
-) -> Result<ConfigSnapshot, Vec<ValidationError>> {
-    let parsed = parse_mvp_config(source, revision_id)
-        .map_err(|error| vec![ValidationError::new(error.code, error.message)])?;
-    let report = validate_config(&parsed.snapshot);
-    if report.is_valid() {
-        Ok(parsed.snapshot)
-    } else {
-        Err(report.errors)
-    }
 }
 
 fn validation_errors_to_app_error(errors: Vec<ValidationError>) -> AppError {
@@ -2104,34 +446,6 @@ where
     })
 }
 
-pub fn proxy_host_id_from_delete_path(path: &str) -> Result<ProxyHostId, AppError> {
-    proxy_host_id_from_member_path(path)
-}
-
-pub fn proxy_host_id_from_update_path(path: &str) -> Result<ProxyHostId, AppError> {
-    proxy_host_id_from_member_path(path)
-}
-
-pub fn proxy_host_id_from_get_path(path: &str) -> Result<ProxyHostId, AppError> {
-    proxy_host_id_from_member_path(path)
-}
-
-fn proxy_host_id_from_member_path(path: &str) -> Result<ProxyHostId, AppError> {
-    let Some(id) = path.strip_prefix("/api/v1/proxy-hosts/") else {
-        return Err(AppError::new(
-            ErrorCode::AdminRouteNotFound,
-            "admin http route not found",
-        ));
-    };
-    if id.is_empty() || id.contains('/') {
-        return Err(AppError::new(
-            ErrorCode::AdminRouteNotFound,
-            "proxy host route requires a single id segment",
-        ));
-    }
-    Ok(ProxyHostId::new(id.to_string()))
-}
-
 pub fn rollback_request_revision_id_from_json(body: &str) -> Result<ConfigRevisionId, AppError> {
     Ok(ConfigRevisionId::new(required_json_string(
         body,
@@ -2174,537 +488,6 @@ fn certificate_ref_from_mutation_path(
         ));
     }
     Ok(CertificateRef::new(id.to_string()))
-}
-
-pub fn handle_health_http(
-    request: &AdminHttpRequest,
-    snapshot: &ConfigSnapshot,
-) -> AdminHttpResponse {
-    if request.method != AdminHttpMethod::Get || request.path != "/api/v1/health" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-
-    AdminHttpResponse::json(200, health_response_json(&health_response(snapshot)))
-}
-
-/// Renders the unauthenticated operational probe payload without exposing
-/// routes, revisions, configuration, or upstream details.
-pub fn handle_operational_probe_http(
-    request: &AdminHttpRequest,
-    lifecycle: OperationalLifecycle,
-    has_active_snapshot: bool,
-    has_listener: bool,
-    has_command_path: bool,
-) -> AdminHttpResponse {
-    let status = match (request.method, request.path.as_str()) {
-        (AdminHttpMethod::Get, "/api/v1/health/live") => lifecycle.liveness(),
-        (AdminHttpMethod::Get, "/api/v1/health/ready") => {
-            lifecycle.readiness(has_active_snapshot, has_listener, has_command_path)
-        }
-        _ => {
-            return error_response(
-                404,
-                AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-                &request.request_id,
-            );
-        }
-    };
-    let (status_code, body) = match status {
-        ProbeStatus::Live => (200, r#"{"status":"live"}"#),
-        ProbeStatus::Ready => (200, r#"{"status":"ready"}"#),
-        ProbeStatus::NotLive => (503, r#"{"status":"not_live"}"#),
-        ProbeStatus::NotReady => (503, r#"{"status":"not_ready"}"#),
-    };
-    AdminHttpResponse::json(status_code, body.to_string())
-}
-
-pub fn handle_upstream_health_http(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    reader: &dyn HealthStatusReader,
-    runtime_reader: Option<&dyn RuntimeUpstreamStatusReader>,
-) -> AdminHttpResponse {
-    if request.method != AdminHttpMethod::Get || request.path != "/api/v1/upstream-health" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-    match reader.read_health_status() {
-        Ok(snapshot) => {
-            let runtime = runtime_reader.and_then(|reader| reader.read_runtime_status().ok());
-            AdminHttpResponse::json(
-                200,
-                upstream_health_status_response_json(&upstream_health_status_response(
-                    snapshot, runtime,
-                )),
-            )
-        }
-        Err(error) => error_response(http_status_for_error(&error), error, &request.request_id),
-    }
-}
-
-pub fn handle_metrics_http(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    reader: &dyn MetricSnapshotReaderPort,
-) -> AdminHttpResponse {
-    if request.method != AdminHttpMethod::Get {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if request.path != "/api/v1/metrics" {
-        let error = if request.path.starts_with("/api/v1/metrics?") {
-            AppError::new(
-                ErrorCode::HttpMalformedRequest,
-                "metrics query parameters are not supported",
-            )
-        } else {
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found")
-        };
-        return error_response(
-            if error.code == ErrorCode::HttpMalformedRequest {
-                400
-            } else {
-                404
-            },
-            error,
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-    match reader.read_metric_snapshot() {
-        Ok(snapshot) => AdminHttpResponse::json(200, metrics_summary_json(&snapshot)),
-        Err(error) => error_response(http_status_for_error(&error), error, &request.request_id),
-    }
-}
-
-pub fn handle_audit_query_http<R>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    reader: &R,
-) -> AdminHttpResponse
-where
-    R: AuditLedgerReader + ?Sized,
-{
-    if request.method != AdminHttpMethod::Get
-        || !(request.path == "/api/v1/audit" || request.path.starts_with("/api/v1/audit?"))
-    {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-    let query = match parse_audit_query(&request.path) {
-        Ok(query) => query,
-        Err(error) => return error_response(400, error, &request.request_id),
-    };
-    match query_audit(reader, true, &query) {
-        Ok(page) => AdminHttpResponse::json(200, audit_page_json(&page)),
-        Err(error) => error_response(http_status_for_error(&error), error, &request.request_id),
-    }
-}
-
-fn parse_audit_query(path: &str) -> Result<AuditQuery, AppError> {
-    let (_, raw_query) = path.split_once('?').unwrap_or((path, ""));
-    let mut values = BTreeMap::new();
-    if !raw_query.is_empty() {
-        for pair in raw_query.split('&') {
-            let (key, value) = pair.split_once('=').ok_or_else(audit_query_invalid)?;
-            if key.is_empty()
-                || value.is_empty()
-                || value.contains('%')
-                || !matches!(
-                    key,
-                    "action" | "outcome" | "target_kind" | "from" | "to" | "limit" | "cursor"
-                )
-                || values.insert(key, value).is_some()
-            {
-                return Err(audit_query_invalid());
-            }
-        }
-    }
-    let action = values
-        .get("action")
-        .map(|value| parse_audit_action(value))
-        .transpose()?;
-    let outcome = values
-        .get("outcome")
-        .map(|value| parse_audit_outcome(value))
-        .transpose()?;
-    let target_kind = values
-        .get("target_kind")
-        .map(|value| parse_audit_target_kind(value))
-        .transpose()?;
-    let from = parse_optional_u64(&values, "from")?;
-    let to = parse_optional_u64(&values, "to")?;
-    let limit = values
-        .get("limit")
-        .map(|value| value.parse::<u16>().map_err(|_| audit_query_invalid()))
-        .transpose()?
-        .unwrap_or(edge_domain::AUDIT_QUERY_DEFAULT_LIMIT);
-    let mut query = AuditQuery::new(action, outcome, target_kind, from, to, limit)
-        .map_err(|_| audit_query_invalid())?;
-    if let Some(cursor) = values.get("cursor") {
-        query = query.with_cursor(decode_audit_cursor(cursor)?);
-    }
-    Ok(query)
-}
-
-fn parse_optional_u64(values: &BTreeMap<&str, &str>, key: &str) -> Result<Option<u64>, AppError> {
-    values
-        .get(key)
-        .map(|value| value.parse::<u64>().map_err(|_| audit_query_invalid()))
-        .transpose()
-}
-
-fn parse_audit_action(value: &str) -> Result<AuditAction, AppError> {
-    match value {
-        "config.apply" => Ok(AuditAction::ConfigApply),
-        "config.rollback" => Ok(AuditAction::ConfigRollback),
-        "proxy_host.create" => Ok(AuditAction::ProxyHostCreate),
-        "proxy_host.update" => Ok(AuditAction::ProxyHostUpdate),
-        "proxy_host.delete" => Ok(AuditAction::ProxyHostDelete),
-        "certificate.issue" => Ok(AuditAction::CertificateIssue),
-        "certificate.renew" => Ok(AuditAction::CertificateRenew),
-        "certificate.import" => Ok(AuditAction::CertificateImport),
-        "certificate.install" => Ok(AuditAction::CertificateInstall),
-        "trust_bundle.import" => Ok(AuditAction::TrustBundleImport),
-        "trust_bundle.delete" => Ok(AuditAction::TrustBundleDelete),
-        "admin.setup" => Ok(AuditAction::AdminSetup),
-        "admin.login.success" => Ok(AuditAction::AdminLoginSuccess),
-        "admin.logout" => Ok(AuditAction::AdminLogout),
-        "admin.lockout" => Ok(AuditAction::AdminLockout),
-        "admin.auth.failure_sampled" => Ok(AuditAction::AdminAuthFailureSampled),
-        "maintenance.restore_imported" => Ok(AuditAction::MaintenanceRestoreImported),
-        "system.trailing_recovery" => Ok(AuditAction::SystemTrailingRecovery),
-        "audit.retention.checkpoint" => Ok(AuditAction::RetentionCheckpoint),
-        _ => Err(audit_query_invalid()),
-    }
-}
-
-fn parse_audit_outcome(value: &str) -> Result<AuditOutcome, AppError> {
-    match value {
-        "succeeded" => Ok(AuditOutcome::Succeeded),
-        "failed" => Ok(AuditOutcome::Failed),
-        "observed" => Ok(AuditOutcome::Observed),
-        "reconciled_committed" => Ok(AuditOutcome::ReconciledCommitted),
-        "reconciled_not_committed" => Ok(AuditOutcome::ReconciledNotCommitted),
-        "reconciliation_unknown" => Ok(AuditOutcome::ReconciliationUnknown),
-        _ => Err(audit_query_invalid()),
-    }
-}
-
-fn parse_audit_target_kind(value: &str) -> Result<AuditTargetKind, AppError> {
-    match value {
-        "config_revision" => Ok(AuditTargetKind::ConfigRevision),
-        "proxy_host" => Ok(AuditTargetKind::ProxyHost),
-        "certificate" => Ok(AuditTargetKind::Certificate),
-        "trust_bundle" => Ok(AuditTargetKind::TrustBundle),
-        "admin_account" => Ok(AuditTargetKind::AdminAccount),
-        "restore" => Ok(AuditTargetKind::Restore),
-        "audit_ledger" => Ok(AuditTargetKind::AuditLedger),
-        _ => Err(audit_query_invalid()),
-    }
-}
-
-fn audit_query_invalid() -> AppError {
-    AppError::new(
-        ErrorCode::HttpMalformedRequest,
-        "audit query does not match the supported contract",
-    )
-}
-
-fn encode_audit_cursor(cursor: AuditCursor) -> String {
-    format!(
-        "v1.{:016x}{:016x}",
-        cursor.ledger_generation, cursor.before_sequence
-    )
-}
-
-fn decode_audit_cursor(value: &str) -> Result<AuditCursor, AppError> {
-    let encoded = value.strip_prefix("v1.").ok_or_else(audit_cursor_invalid)?;
-    if encoded.len() != 32 || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(audit_cursor_invalid());
-    }
-    Ok(AuditCursor {
-        ledger_generation: u64::from_str_radix(&encoded[..16], 16)
-            .map_err(|_| audit_cursor_invalid())?,
-        before_sequence: u64::from_str_radix(&encoded[16..], 16)
-            .map_err(|_| audit_cursor_invalid())?,
-    })
-}
-
-fn audit_cursor_invalid() -> AppError {
-    AppError::new(ErrorCode::AuditCursorInvalid, "audit cursor is invalid")
-}
-
-fn audit_admission_state_name(state: AuditAdmissionState) -> &'static str {
-    match state {
-        AuditAdmissionState::Starting => "starting",
-        AuditAdmissionState::Verifying => "verifying",
-        AuditAdmissionState::Reconciling => "reconciling",
-        AuditAdmissionState::Healthy => "healthy",
-        AuditAdmissionState::Degraded => "degraded",
-        AuditAdmissionState::FailedClosed => "failed_closed",
-    }
-}
-
-fn audit_page_json(page: &AuditPage) -> String {
-    let records = page
-        .records
-        .iter()
-        .map(|view| {
-            let record = &view.record;
-            serde_json::json!({
-                "sequence": view.sequence,
-                "record_kind": record.record_kind.as_str(),
-                "operation_id": record.context.operation_id.as_str(),
-                "request_id": record.context.request_id.as_str(),
-                "actor_kind": record.context.actor_kind.as_str(),
-                "received_at_epoch_seconds": record.context.received_at_epoch_seconds,
-                "action": record.action.as_str(),
-                "target_kind": record.target_kind.as_str(),
-                "target_id": record.target_id.as_str(),
-                "before_revision": record.before_revision.as_ref().map(|value| value.as_str()),
-                "after_revision": record.after_revision.as_ref().map(|value| value.as_str()),
-                "outcome": record.outcome.map(|value| value.as_str()),
-                "error_code": record.error_code.as_ref().map(|value| value.as_str()),
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::json!({
-        "schema_version": 1,
-        "ledger": {
-            "generation": page.head.generation,
-            "sequence": page.head.sequence,
-            "admission_state": audit_admission_state_name(page.admission_state),
-        },
-        "records": records,
-        "next_cursor": page.next_cursor.map(encode_audit_cursor),
-    })
-    .to_string()
-}
-
-fn metrics_summary_json(snapshot: &MetricSnapshot) -> String {
-    let mut counters = Vec::new();
-    let mut gauges = Vec::new();
-    let mut histograms = Vec::new();
-    for series in &snapshot.series {
-        let item = metric_series_json(series);
-        match &series.value {
-            MetricSeriesValue::Counter(_) if counters.len() < 500 => counters.push(item),
-            MetricSeriesValue::Gauge(_) if gauges.len() < 500 => gauges.push(item),
-            MetricSeriesValue::Histogram(_) if histograms.len() < 500 => histograms.push(item),
-            _ => {}
-        }
-    }
-    let dropped = snapshot
-        .dropped
-        .iter()
-        .map(|(reason, count)| {
-            let reason = match reason {
-                edge_application::MetricDropReason::SeriesLimit => "series_limit",
-                edge_application::MetricDropReason::ResponseBudget => "response_budget",
-            };
-            format!("\"{reason}\":{count}")
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{{\"ready\":{},\"desired_generation\":{},\"applied_generation\":{},\"estimated_encoded_bytes\":{},\"dropped\":{{{dropped}}},\"counters\":[{}],\"gauges\":[{}],\"histograms\":[{}]}}", snapshot.ready, snapshot.desired_generation, snapshot.applied_generation, snapshot.estimated_encoded_bytes, counters.join(","), gauges.join(","), histograms.join(","))
-}
-
-fn metric_series_json(series: &edge_application::MetricSeries) -> String {
-    let labels = series
-        .key
-        .labels
-        .iter()
-        .map(|(key, value)| format!("\"{}\":\"{}\"", json_escape(key), json_escape(value)))
-        .collect::<Vec<_>>()
-        .join(",");
-    let value = match &series.value {
-        MetricSeriesValue::Counter(value) => value.to_string(),
-        MetricSeriesValue::Gauge(value) => value.to_string(),
-        MetricSeriesValue::Histogram(value) => format!(
-            "{{\"count\":{},\"sum_ms\":{},\"cumulative_buckets\":[{}]}}",
-            value.count,
-            value.sum_ms,
-            value
-                .cumulative_buckets
-                .iter()
-                .map(u64::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-    };
-    format!(
-        "{{\"name\":\"{}\",\"labels\":{{{labels}}},\"value\":{value}}}",
-        series.key.descriptor.definition().name
-    )
-}
-
-pub fn handle_certificate_list_http<S>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    certificates: &S,
-    now_epoch_seconds: u64,
-    renewal_window_seconds: u64,
-) -> AdminHttpResponse
-where
-    S: CertificateStore + ?Sized,
-{
-    if request.method != AdminHttpMethod::Get || request.path != "/api/v1/certificates" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-
-    match certificates.list_certificates() {
-        Ok(certificates) => {
-            let statuses =
-                certificate_statuses(&certificates, now_epoch_seconds, renewal_window_seconds);
-            AdminHttpResponse::json(200, certificate_list_response_json(&statuses))
-        }
-        Err(error) => error_response(500, error, &request.request_id),
-    }
-}
-
-pub fn handle_certificate_get_http<S>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    certificates: &S,
-    now_epoch_seconds: u64,
-    renewal_window_seconds: u64,
-) -> AdminHttpResponse
-where
-    S: CertificateStore + ?Sized,
-{
-    if request.method != AdminHttpMethod::Get {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-
-    let certificate_ref = match certificate_ref_from_get_path(&request.path) {
-        Ok(certificate_ref) => certificate_ref,
-        Err(error) => {
-            return error_response(http_status_for_error(&error), error, &request.request_id)
-        }
-    };
-    match certificates.load_certificate(&certificate_ref) {
-        Ok(Some(certificate)) => AdminHttpResponse::json(
-            200,
-            certificate_status_json(&certificate_status(
-                &certificate,
-                now_epoch_seconds,
-                renewal_window_seconds,
-            )),
-        ),
-        Ok(None) => error_response(
-            404,
-            AppError::new(
-                ErrorCode::CertificateNotFound,
-                format!("certificate not found: {}", certificate_ref.as_str()),
-            ),
-            &request.request_id,
-        ),
-        Err(error) => error_response(500, error, &request.request_id),
-    }
-}
-
-pub fn handle_certificate_import_http<V, S, A, K>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    revision_id: &ConfigRevisionId,
-    validator: &mut V,
-    certificates: &mut S,
-    audit: &mut A,
-    client: &mut K,
-) -> AdminHttpResponse
-where
-    V: CertificateMaterialValidator + ?Sized,
-    S: CertificateStore + ?Sized,
-    A: AuditSink + ?Sized,
-    K: CoreCommandClient + ?Sized,
-{
-    if request.method != AdminHttpMethod::Post {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-    if let Err(error) = require_csrf(
-        sessions,
-        request.session_id.as_deref().unwrap_or_default(),
-        request.csrf_token.as_deref(),
-    ) {
-        return error_response(403, error, &request.request_id);
-    }
-
-    let certificate_ref = match certificate_ref_from_import_path(&request.path) {
-        Ok(certificate_ref) => certificate_ref,
-        Err(error) => {
-            return error_response(http_status_for_error(&error), error, &request.request_id)
-        }
-    };
-    let import_request = match manual_certificate_import_request_from_json(
-        &request.body,
-        certificate_ref,
-        &request.request_id,
-        revision_id,
-    ) {
-        Ok(import_request) => import_request,
-        Err(error) => return error_response(400, error, &request.request_id),
-    };
-
-    match import_manual_certificate_and_install(
-        import_request,
-        validator,
-        certificates,
-        audit,
-        client,
-    ) {
-        Ok(outcome) => AdminHttpResponse::json(
-            200,
-            certificate_import_outcome_json(&outcome, &request.request_id),
-        ),
-        Err(failure) => error_response(
-            http_status_for_error(&failure.error),
-            failure.error,
-            &request.request_id,
-        ),
-    }
 }
 
 pub fn handle_certificate_issue_http<C, S, A, K>(
@@ -2865,44 +648,6 @@ where
     }
 }
 
-pub fn handle_access_logs_http(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    events: &[AccessLogEvent],
-) -> AdminHttpResponse {
-    if request.method != AdminHttpMethod::Get || request.path != "/api/v1/logs/access" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-
-    AdminHttpResponse::json(200, access_logs_response_json(events))
-}
-
-pub fn handle_error_logs_http(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    events: &[RecentErrorEvent],
-) -> AdminHttpResponse {
-    if request.method != AdminHttpMethod::Get || request.path != "/api/v1/logs/errors" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-
-    AdminHttpResponse::json(200, error_logs_response_json(events))
-}
-
 fn certificate_statuses(
     certificates: &[edge_ports::StoredCertificate],
     now_epoch_seconds: u64,
@@ -2934,322 +679,6 @@ fn certificate_ref_from_get_path(path: &str) -> Result<CertificateRef, AppError>
     Ok(CertificateRef::new(id.to_string()))
 }
 
-pub fn handle_config_get_http(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    snapshot: &ConfigSnapshot,
-) -> AdminHttpResponse {
-    if request.method != AdminHttpMethod::Get || request.path != "/api/v1/config" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-
-    AdminHttpResponse::json(200, config_response_json(snapshot))
-}
-
-pub fn handle_config_validate_http(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-) -> AdminHttpResponse {
-    if request.method != AdminHttpMethod::Post || request.path != "/api/v1/config/validate" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-
-    AdminHttpResponse::json(
-        200,
-        config_validation_response_json(&validate_config_source(&request.body)),
-    )
-}
-
-pub fn handle_config_diff_http(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    current: &ConfigSnapshot,
-) -> AdminHttpResponse {
-    if request.method != AdminHttpMethod::Post || request.path != "/api/v1/config/diff" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-
-    let candidate_revision_id =
-        ConfigRevisionId::new(format!("{}-config-diff", current.revision_id.as_str()));
-    match parse_valid_config_source(&request.body, candidate_revision_id) {
-        Ok(next) => {
-            let diff = diff_config(Some(current), &next);
-            AdminHttpResponse::json(200, config_diff_response_json(Some(&diff), &[]))
-        }
-        Err(errors) => AdminHttpResponse::json(200, config_diff_response_json(None, &errors)),
-    }
-}
-
-pub fn handle_config_apply_http<R, A, C>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    lifecycle: &mut ConfigLifecycle<R, A>,
-    client: &mut C,
-) -> AdminHttpResponse
-where
-    R: ConfigRevisionRepository,
-    A: AuditSink,
-    C: CoreCommandClient + ?Sized,
-{
-    if request.method != AdminHttpMethod::Post || request.path != "/api/v1/config/apply" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-    if let Err(error) = require_csrf(
-        sessions,
-        request.session_id.as_deref().unwrap_or_default(),
-        request.csrf_token.as_deref(),
-    ) {
-        return error_response(403, error, &request.request_id);
-    }
-
-    match apply_config_source(lifecycle, &request.body, client) {
-        Ok(response) => AdminHttpResponse::json(200, apply_response_json(&response)),
-        Err(error) => error_response(http_status_for_error(&error), error, &request.request_id),
-    }
-}
-
-pub fn handle_proxy_host_list_http(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    snapshot: &ConfigSnapshot,
-) -> AdminHttpResponse {
-    if request.method != AdminHttpMethod::Get || request.path != "/api/v1/proxy-hosts" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-
-    AdminHttpResponse::json(
-        200,
-        proxy_host_list_response_json(&proxy_hosts_from_snapshot(snapshot)),
-    )
-}
-
-pub fn handle_proxy_host_get_http(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    snapshot: &ConfigSnapshot,
-) -> AdminHttpResponse {
-    if request.method != AdminHttpMethod::Get {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-
-    let proxy_host_id = match proxy_host_id_from_get_path(&request.path) {
-        Ok(proxy_host_id) => proxy_host_id,
-        Err(error) => {
-            return error_response(http_status_for_error(&error), error, &request.request_id)
-        }
-    };
-    match proxy_host_from_snapshot(snapshot, &proxy_host_id) {
-        Ok(proxy_host) => AdminHttpResponse::json(200, proxy_host_response_json(&proxy_host)),
-        Err(error) => error_response(http_status_for_error(&error), error, &request.request_id),
-    }
-}
-
-pub fn handle_proxy_host_create_http<R, A, C>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    lifecycle: &mut ConfigLifecycle<R, A>,
-    client: &mut C,
-) -> AdminHttpResponse
-where
-    R: ConfigRevisionRepository,
-    A: AuditSink,
-    C: CoreCommandClient + ?Sized,
-{
-    if request.method != AdminHttpMethod::Post || request.path != "/api/v1/proxy-hosts" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-    if let Err(error) = require_csrf(
-        sessions,
-        request.session_id.as_deref().unwrap_or_default(),
-        request.csrf_token.as_deref(),
-    ) {
-        return error_response(403, error, &request.request_id);
-    }
-
-    let proxy_host = match proxy_host_request_from_json(&request.body) {
-        Ok(proxy_host) => proxy_host,
-        Err(error) => return error_response(400, error, &request.request_id),
-    };
-    match create_proxy_host_and_apply(lifecycle, proxy_host, client) {
-        Ok(response) => AdminHttpResponse::json(200, apply_response_json(&response)),
-        Err(error) => error_response(http_status_for_error(&error), error, &request.request_id),
-    }
-}
-
-pub fn handle_proxy_host_update_http<R, A, C>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    lifecycle: &mut ConfigLifecycle<R, A>,
-    client: &mut C,
-) -> AdminHttpResponse
-where
-    R: ConfigRevisionRepository,
-    A: AuditSink,
-    C: CoreCommandClient + ?Sized,
-{
-    if request.method != AdminHttpMethod::Patch {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-    if let Err(error) = require_csrf(
-        sessions,
-        request.session_id.as_deref().unwrap_or_default(),
-        request.csrf_token.as_deref(),
-    ) {
-        return error_response(403, error, &request.request_id);
-    }
-
-    let proxy_host_id = match proxy_host_id_from_update_path(&request.path) {
-        Ok(proxy_host_id) => proxy_host_id,
-        Err(error) => {
-            return error_response(http_status_for_error(&error), error, &request.request_id)
-        }
-    };
-    let proxy_host = match proxy_host_request_from_json(&request.body) {
-        Ok(proxy_host) => proxy_host,
-        Err(error) => return error_response(400, error, &request.request_id),
-    };
-    match update_proxy_host_and_apply(lifecycle, proxy_host_id, proxy_host, client) {
-        Ok(response) => AdminHttpResponse::json(200, apply_response_json(&response)),
-        Err(error) => error_response(http_status_for_error(&error), error, &request.request_id),
-    }
-}
-
-pub fn handle_proxy_host_delete_http<R, A, C>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    lifecycle: &mut ConfigLifecycle<R, A>,
-    client: &mut C,
-) -> AdminHttpResponse
-where
-    R: ConfigRevisionRepository,
-    A: AuditSink,
-    C: CoreCommandClient + ?Sized,
-{
-    if request.method != AdminHttpMethod::Delete {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-    if let Err(error) = require_csrf(
-        sessions,
-        request.session_id.as_deref().unwrap_or_default(),
-        request.csrf_token.as_deref(),
-    ) {
-        return error_response(403, error, &request.request_id);
-    }
-
-    let proxy_host_id = match proxy_host_id_from_delete_path(&request.path) {
-        Ok(proxy_host_id) => proxy_host_id,
-        Err(error) => {
-            return error_response(http_status_for_error(&error), error, &request.request_id)
-        }
-    };
-    match delete_proxy_host_and_apply(lifecycle, proxy_host_id, client) {
-        Ok(response) => AdminHttpResponse::json(200, apply_response_json(&response)),
-        Err(error) => error_response(http_status_for_error(&error), error, &request.request_id),
-    }
-}
-
-pub fn handle_config_rollback_http<R, A, C>(
-    request: &AdminHttpRequest,
-    sessions: &SessionStore,
-    lifecycle: &mut ConfigLifecycle<R, A>,
-    client: &mut C,
-) -> AdminHttpResponse
-where
-    R: ConfigRevisionRepository,
-    A: AuditSink,
-    C: CoreCommandClient + ?Sized,
-{
-    if request.method != AdminHttpMethod::Post || request.path != "/api/v1/config/rollback" {
-        return error_response(
-            404,
-            AppError::new(ErrorCode::AdminRouteNotFound, "admin http route not found"),
-            &request.request_id,
-        );
-    }
-    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
-        return error_response(401, error, &request.request_id);
-    }
-    if let Err(error) = require_csrf(
-        sessions,
-        request.session_id.as_deref().unwrap_or_default(),
-        request.csrf_token.as_deref(),
-    ) {
-        return error_response(403, error, &request.request_id);
-    }
-
-    let revision_id = match rollback_request_revision_id_from_json(&request.body) {
-        Ok(revision_id) => revision_id,
-        Err(error) => return error_response(400, error, &request.request_id),
-    };
-    match rollback(revision_id, lifecycle, client) {
-        Ok(response) => AdminHttpResponse::json(200, apply_response_json(&response)),
-        Err(error) => error_response(http_status_for_error(&error), error, &request.request_id),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
@@ -3259,8 +688,8 @@ mod tests {
     use edge_application::checksum_snapshot;
     use edge_domain::{
         AdminConfig, CertificateRef, CommandAck, ConfigRevision, ConfigRevisionId, CoreCommand,
-        Listener, ListenerId, ListenerProtocol, LogMode, RuntimeOptions, Service, ServiceId,
-        Upstream, UpstreamId,
+        HealthAvailabilitySnapshot, Listener, ListenerId, ListenerProtocol, LogMode,
+        RuntimeOptions, Service, ServiceId, Upstream, UpstreamId,
     };
     use edge_ports::{
         AcmeClient, AcmeHttp01ChallengeRuntime, AcmeOrderRequest, AcmeOrderResult, AuditEvent,
@@ -3704,6 +1133,30 @@ mod tests {
         assert!(available_json.contains("\"pressure\":\"pressured\""));
         assert!(unavailable.live_resource_status.is_none());
         assert!(unavailable_json.contains("\"live_resource_status\":null"));
+    }
+
+    #[test]
+    fn status_http_renders_desired_active_and_optional_live_resource_status() {
+        let active = snapshot();
+        let mut desired = active.clone();
+        desired.revision_id = ConfigRevisionId::new("rev-desired");
+        let live = edge_ports::RuntimeResourceStatusSnapshot {
+            revision_id: active.revision_id.clone(),
+            generation: 9,
+            used_payload_bytes: 64,
+            payload_limit_bytes: 128,
+            active_connections: 2,
+            pressure: edge_ports::RuntimeResourcePressure::Pressured,
+        };
+
+        let response = handle_status_http_with_resource(&desired, &active, Some(live));
+
+        assert_eq!(response.status_code, 200);
+        assert!(response
+            .body
+            .contains("\"desired_revision_id\":\"rev-desired\""));
+        assert!(response.body.contains("\"active_revision_id\":\"rev-1\""));
+        assert!(response.body.contains("\"live_resource_status\":{"));
     }
 
     #[test]
@@ -4483,6 +1936,23 @@ mod tests {
     }
 
     #[test]
+    fn config_source_schema_preserves_valid_snapshot_and_validation_error_contract() {
+        let snapshot = snapshot();
+        let source = render_mvp_config_snapshot(&snapshot);
+
+        let parsed = parse_valid_config_source(&source, ConfigRevisionId::new("candidate"))
+            .expect("rendered snapshot is valid");
+        assert_eq!(parsed.revision_id.as_str(), "candidate");
+        assert!(validate_config_source(&source).is_empty());
+
+        let invalid = source.replace("http://127.0.0.1:3000", "https://127.0.0.1:3000");
+        let errors = validate_config_source(&invalid);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, ErrorCode::ConfigInvalidUpstreamUrl);
+        assert!(parse_valid_config_source(&invalid, ConfigRevisionId::new("candidate")).is_err());
+    }
+
+    #[test]
     fn http_config_diff_returns_route_and_upstream_changes() {
         let mut sessions = SessionStore::default();
         sessions.insert(Session {
@@ -4561,6 +2031,35 @@ mod tests {
         assert_eq!(response.status_code, 401);
         assert!(response.body.contains("\"code\":\"ADMIN_AUTH_REQUIRED\""));
         assert!(response.body.contains("\"request_id\":\"req-list-auth\""));
+    }
+
+    #[test]
+    fn proxy_host_member_path_parsers_preserve_v1_id_and_not_found_contract() {
+        for parser in [
+            proxy_host_id_from_get_path,
+            proxy_host_id_from_update_path,
+            proxy_host_id_from_delete_path,
+        ] {
+            assert_eq!(parser("/api/v1/proxy-hosts/app").unwrap().as_str(), "app");
+
+            let wrong_prefix = parser("/api/v1/routes/app").unwrap_err();
+            assert_eq!(wrong_prefix.code, ErrorCode::AdminRouteNotFound);
+            assert_eq!(wrong_prefix.message, "admin http route not found");
+
+            let empty_id = parser("/api/v1/proxy-hosts/").unwrap_err();
+            assert_eq!(empty_id.code, ErrorCode::AdminRouteNotFound);
+            assert_eq!(
+                empty_id.message,
+                "proxy host route requires a single id segment"
+            );
+
+            let nested_id = parser("/api/v1/proxy-hosts/app/health").unwrap_err();
+            assert_eq!(nested_id.code, ErrorCode::AdminRouteNotFound);
+            assert_eq!(
+                nested_id.message,
+                "proxy host route requires a single id segment"
+            );
+        }
     }
 
     #[test]
@@ -4784,7 +2283,7 @@ mod tests {
         assert!(response
             .body
             .contains("\"revision_id\":\"rev-1-proxy-host-app\""));
-        assert!(response.body.contains("\"commands_sent\":2"));
+        assert!(response.body.contains("\"commands_sent\":1"));
         assert!(response.body.contains("\"restart_required\":false"));
         assert_eq!(
             lifecycle
@@ -4939,7 +2438,7 @@ mod tests {
 
         assert_eq!(response.status_code, 200);
         assert!(response.body.contains("\"revision_id\":\"rev-1\""));
-        assert!(response.body.contains("\"commands_sent\":2"));
+        assert!(response.body.contains("\"commands_sent\":1"));
         assert_eq!(
             lifecycle
                 .revisions
@@ -5038,7 +2537,7 @@ mod tests {
         assert!(response
             .body
             .contains("\"revision_id\":\"rev-1-config-apply\""));
-        assert!(response.body.contains("\"commands_sent\":2"));
+        assert!(response.body.contains("\"commands_sent\":1"));
         let current = lifecycle.revisions.current().unwrap().unwrap();
         assert_eq!(current.revision.id.as_str(), "rev-1-config-apply");
         let service = current
@@ -5164,7 +2663,7 @@ mod tests {
         assert!(response
             .body
             .contains("\"revision_id\":\"rev-1-proxy-host-app-delete-proxy-host-app\""));
-        assert!(response.body.contains("\"commands_sent\":2"));
+        assert!(response.body.contains("\"commands_sent\":1"));
         let current = lifecycle.revisions.current().unwrap().unwrap();
         assert!(!current
             .snapshot
@@ -5277,7 +2776,7 @@ mod tests {
         assert!(response
             .body
             .contains("\"revision_id\":\"rev-1-proxy-host-app-update-proxy-host-app\""));
-        assert!(response.body.contains("\"commands_sent\":2"));
+        assert!(response.body.contains("\"commands_sent\":1"));
         let current = lifecycle.revisions.current().unwrap().unwrap();
         let route = current
             .snapshot
@@ -5786,7 +3285,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(response.commands_sent, 2);
+        assert_eq!(response.commands_sent, 1);
         assert!(!response.restart_required);
         assert_eq!(
             lifecycle
@@ -5876,7 +3375,7 @@ mod tests {
             rollback(ConfigRevisionId::new("rev-1"), &mut lifecycle, &mut client).unwrap();
 
         assert_eq!(response.revision_id, "rev-1");
-        assert_eq!(response.commands_sent, 2);
+        assert_eq!(response.commands_sent, 1);
         assert_eq!(
             lifecycle
                 .revisions
@@ -6118,5 +3617,54 @@ mod tests {
         assert_eq!(response.digest_sha256, "ab".repeat(32));
         assert_eq!(response.collected_artifacts, ["version_manifest"]);
         assert_eq!(response.total_bytes, 42);
+    }
+
+    #[test]
+    fn support_bundle_http_preserves_safe_success_json_and_auth_statuses() {
+        let mut sessions = SessionStore::default();
+        sessions.insert(Session {
+            session_id: "session".into(),
+            csrf_token: "csrf".into(),
+        });
+
+        let unauthorized = handle_support_bundle_http(
+            &AdminHttpRequest::new(AdminHttpMethod::Post, "/api/v1/support-bundle", "req-1"),
+            &sessions,
+            FakeSupportCollector,
+        );
+        assert_eq!(unauthorized.status_code, 401);
+        assert_eq!(
+            unauthorized.error_code.as_deref(),
+            Some("ADMIN_AUTH_REQUIRED")
+        );
+
+        let csrf_required = handle_support_bundle_http(
+            &AdminHttpRequest::new(AdminHttpMethod::Post, "/api/v1/support-bundle", "req-2")
+                .with_session_id("session"),
+            &sessions,
+            FakeSupportCollector,
+        );
+        assert_eq!(csrf_required.status_code, 403);
+        assert_eq!(
+            csrf_required.error_code.as_deref(),
+            Some("ADMIN_CSRF_REQUIRED")
+        );
+
+        let response = handle_support_bundle_http(
+            &AdminHttpRequest::new(AdminHttpMethod::Post, "/api/v1/support-bundle", "req-3")
+                .with_session_id("session")
+                .with_csrf_token("csrf"),
+            &sessions,
+            FakeSupportCollector,
+        );
+        assert_eq!(response.status_code, 200);
+        assert_eq!(
+            response.body,
+            format!(
+                "{{\"archive_id\":\"archive-safe\",\"digest_sha256\":\"{}\",\"collected_artifacts\":[\"version_manifest\"],\"omitted_artifacts\":[],\"total_bytes\":42}}",
+                "ab".repeat(32)
+            )
+        );
+        assert!(!response.body.contains("redaction_applied"));
     }
 }

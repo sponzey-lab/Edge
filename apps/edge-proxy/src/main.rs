@@ -1,7 +1,18 @@
+mod admin_audit;
 mod admin_http;
+mod admin_log_ingestion;
+mod admin_static_assets;
+mod admin_trust_bundles;
 mod bootstrap;
+mod bootstrap_audit;
 mod health_runtime;
+mod https_listener_selection;
+mod operational_probe;
 mod process_mode;
+mod runtime_status;
+mod sigterm_drain;
+mod startup_logging;
+mod upgrade_lifecycle;
 
 use admin_http::{
     spawn_admin_http_server_with_mutations_and_logs, AdminHttpChallengeRuntime,
@@ -13,29 +24,30 @@ use bootstrap::{
     acme_client_mode_from_env, bootstrap_config_from_env, dev_serve_config_from_env,
     ensure_data_layout, AcmeClientMode,
 };
+use bootstrap_audit::{FailClosedAuditInspector, StartupAuditAdmission};
+#[cfg(test)]
+use edge_adapters::FileOfflineUpgradeJournalStore;
 use edge_adapters::{
     load_rustls_server_config, spawn_metric_registry_collector, spawn_metrics_listener,
     stderr_json_log_sink, stdout_json_log_sink, AgeBackupArchiveReader, AgeBackupArchiveWriter,
-    AuditLedgerOptions, CommandOfflineUpgradeDeployment, ComposeUpgradeHelperRunner,
-    FakeAcmeClient, FileAuditLedger, FileBackupArtifactSource, FileBootstrapConfigSeed,
-    FileCertificateStore, FileDataDirectoryLockManager, FileNewTargetRestorePublisher,
-    FileOfflineUpgradeJournalStore, FileReplaceRestorePublisher, FileRestoreArchiveExtractor,
+    AuditLedgerOptions, FakeAcmeClient, FileAuditLedger, FileBackupArtifactSource,
+    FileBootstrapConfigSeed, FileCertificateStore, FileDataDirectoryLockManager,
+    FileNewTargetRestorePublisher, FileReplaceRestorePublisher, FileRestoreArchiveExtractor,
     FileRestorePreflight, FileRestoreProvenanceWriter, FileRestoreTransactionStore,
     FileRevisionRepository, FileSecretStore, FileTrustBundleStore, LetsEncryptHttp01AcmeClient,
     MetricChannelPublisher, PreparedHealthTlsRegistry, RandomOperationIdGenerator,
     RustlsClientTlsSessionFactory, RustlsServerTlsSessionFactory, Sha256BackupManifestDigester,
-    SharedFileAuditLedger, SystemClock, SystemUpgradeHelperProcessExecutor,
-    SystemdUpgradeHelperRunner, TlsRuntimeSnapshot, UpgradeHelperProcessExecutor,
+    SharedFileAuditLedger, SystemClock, TlsRuntimeSnapshot,
 };
 #[cfg(test)]
 use edge_application::parse_mvp_config;
 use edge_application::{
-    build_info_metric, certificate_expiry_metric, execute_journaled_offline_upgrade_with_receipt,
-    initialize_audit_ledger, plan_upstream_tls_preparation, process_start_time_metric,
-    recover_offline_upgrade, upstream_availability_metric, CreateBackupInput, CreateBackupUseCase,
-    RecoverRestoreUseCase, ReplaceRestoreBackupInput, ReplaceRestoreBackupUseCase,
-    ResolveStartupConfigUseCase, RestoreBackupInput, RestoreBackupUseCase, StartupConfigOrigin,
-    TlsFailureObservation, TlsFailureProductSampler, VerifyBackupInput, VerifyBackupUseCase,
+    build_info_metric, certificate_expiry_metric, initialize_audit_ledger,
+    plan_upstream_tls_preparation, process_start_time_metric, upstream_availability_metric,
+    CreateBackupInput, CreateBackupUseCase, RecoverRestoreUseCase, ReplaceRestoreBackupInput,
+    ReplaceRestoreBackupUseCase, ResolveStartupConfigUseCase, RestoreBackupInput,
+    RestoreBackupUseCase, StartupConfigOrigin, TlsFailureObservation, TlsFailureProductSampler,
+    VerifyBackupInput, VerifyBackupUseCase,
 };
 use edge_core::legacy_single_upstream::{run_single_upstream_proxy, SingleUpstreamProxyConfig};
 use edge_core::snapshot_http::{
@@ -47,40 +59,43 @@ use edge_core::{
     UpstreamTarget,
 };
 use edge_domain::{
-    AppError, AuditAction, AuditActorKind, AuditAdmissionState, AuditAuthoritativeFact,
-    AuditContext, AuditOperationId, AuditRequestId, AuditTargetId, BootstrapConfig, CertificateRef,
-    ClientAuthPolicy, CommandAck, ConfigRevisionId, ConfigSnapshot, CoreCommand, ErrorCode,
-    ListenerProtocol, OperationalLifecycle, RuntimeResourcePolicy, TrustBundleRef,
+    AppError, AuditActorKind, AuditAdmissionState, AuditContext, AuditOperationId, AuditRequestId,
+    CertificateRef, ClientAuthPolicy, CommandAck, ConfigRevisionId, ConfigSnapshot, CoreCommand,
+    ErrorCode, ListenerProtocol, OperationalLifecycle, RuntimeResourcePolicy, TrustBundleRef,
 };
 use edge_ports::{
-    AcmeClient, AuditAdmissionController, AuditAuthoritativeStateInspector, AuditLedgerReader,
-    AuditLedgerVerifier, CertificateStore, CoreCommandClient, DataDirectoryLockManager, LogSink,
-    MetricPublishOutcome, MetricPublisher, SecretStore, StartupConfigPreflight, StructuredLogEvent,
-    TrustBundleReader,
+    AcmeClient, AuditLedgerReader, AuditLedgerVerifier, CertificateStore, CoreCommandClient,
+    DataDirectoryLockManager, LogSink, MetricPublishOutcome, MetricPublisher, SecretStore,
+    StartupConfigPreflight, StructuredLogEvent, TrustBundleReader,
 };
 #[cfg(test)]
 use edge_ports::{ConfigRevisionRepository, MetricEvent};
 use health_runtime::{HealthRuntimeController, HealthRuntimeObservability};
-use process_mode::{parse_process_mode, ProbeOptions, ProbeTarget, ProcessMode};
+use https_listener_selection::{
+    https_certificate_refs, https_listener_configs, StartupHttpsListener,
+};
+use operational_probe::run_probe;
+use process_mode::{parse_process_mode, ProcessMode};
+#[cfg(test)]
+use sigterm_drain::begin_sigterm_drain;
+use sigterm_drain::install_sigterm_drain_watcher;
+#[cfg(all(test, unix))]
+use sigterm_drain::{handle_sigterm, SIGTERM_REQUESTED};
+use startup_logging::{
+    record_audit_startup_log, record_process_start_log, record_startup_config_resolution_log,
+    record_upstream_tls_prepared_log,
+};
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 #[cfg(unix)]
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-
-const SIGTERM_DRAIN_DEADLINE_MS: u64 = 30_000;
-
-#[cfg(unix)]
-static SIGTERM_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-#[cfg(unix)]
-extern "C" fn handle_sigterm(_signal: libc::c_int) {
-    // SAFETY: AtomicBool::store is lock-free on supported Unix targets and the
-    // handler performs no allocation, I/O, locking, or command delivery.
-    SIGTERM_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
-}
+#[cfg(test)]
+use upgrade_lifecycle::{
+    render_upgrade_result, run_upgrade_recover_with_executor, run_upgrade_with_executor,
+};
+use upgrade_lifecycle::{run_upgrade, run_upgrade_recover};
 
 fn main() -> std::io::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -109,118 +124,6 @@ fn run_maintenance(mode: ProcessMode) -> std::io::Result<()> {
         ProcessMode::UpgradeRecover(options) => run_upgrade_recover(options),
         ProcessMode::Probe(options) => std::process::exit(run_probe(options)),
         ProcessMode::Serve => run_serve(),
-    }
-}
-
-fn run_upgrade(options: process_mode::UpgradeOptions) -> std::io::Result<()> {
-    let receipt = run_upgrade_with_executor(options, SystemUpgradeHelperProcessExecutor)
-        .map_err(app_error_to_io)?;
-    println!(
-        "{}",
-        render_upgrade_result(&receipt.operation_id, receipt.state)
-    );
-    Ok(())
-}
-
-fn run_upgrade_with_executor<E: UpgradeHelperProcessExecutor>(
-    options: process_mode::UpgradeOptions,
-    executor: E,
-) -> Result<edge_application::OfflineUpgradeExecutionReceipt, AppError> {
-    let mut journals = FileOfflineUpgradeJournalStore::new(&options.data_dir)?;
-    match options.deployment {
-        process_mode::UpgradeDeployment::Systemd => {
-            let mut deployment =
-                CommandOfflineUpgradeDeployment::new(SystemdUpgradeHelperRunner::new(executor));
-            execute_journaled_offline_upgrade_with_receipt(
-                &mut deployment,
-                &mut journals,
-                options.request,
-            )
-        }
-        process_mode::UpgradeDeployment::Compose => {
-            let mut deployment =
-                CommandOfflineUpgradeDeployment::new(ComposeUpgradeHelperRunner::new(executor));
-            execute_journaled_offline_upgrade_with_receipt(
-                &mut deployment,
-                &mut journals,
-                options.request,
-            )
-        }
-    }
-}
-
-fn run_upgrade_recover(options: process_mode::UpgradeRecoverOptions) -> std::io::Result<()> {
-    let state =
-        run_upgrade_recover_with_executor(options.clone(), SystemUpgradeHelperProcessExecutor)
-            .map_err(app_error_to_io)?;
-    println!("{}", render_upgrade_result(&options.operation_id, state));
-    Ok(())
-}
-
-fn run_upgrade_recover_with_executor<E: UpgradeHelperProcessExecutor>(
-    options: process_mode::UpgradeRecoverOptions,
-    executor: E,
-) -> Result<edge_domain::OfflineUpgradeState, AppError> {
-    let mut journals = FileOfflineUpgradeJournalStore::new(&options.data_dir)?;
-    match options.deployment {
-        process_mode::UpgradeDeployment::Systemd => {
-            let mut deployment =
-                CommandOfflineUpgradeDeployment::new(SystemdUpgradeHelperRunner::new(executor));
-            recover_offline_upgrade(&mut deployment, &mut journals, &options.operation_id)
-        }
-        process_mode::UpgradeDeployment::Compose => {
-            let mut deployment =
-                CommandOfflineUpgradeDeployment::new(ComposeUpgradeHelperRunner::new(executor));
-            recover_offline_upgrade(&mut deployment, &mut journals, &options.operation_id)
-        }
-    }
-}
-
-fn render_upgrade_result(operation_id: &str, state: edge_domain::OfflineUpgradeState) -> String {
-    let state = match state {
-        edge_domain::OfflineUpgradeState::Committed => "committed",
-        edge_domain::OfflineUpgradeState::RolledBack => "rolled_back",
-        _ => "incomplete",
-    };
-    serde_json::json!({ "result_schema_version": 1, "operation_id": operation_id, "state": state })
-        .to_string()
-}
-
-fn run_probe(options: ProbeOptions) -> i32 {
-    let address = match options.admin_bind.parse::<SocketAddr>() {
-        Ok(address) if address.ip().is_loopback() => address,
-        _ => return 2,
-    };
-    let path = match options.target {
-        ProbeTarget::Live => "/api/v1/health/live",
-        ProbeTarget::Ready => "/api/v1/health/ready",
-    };
-    let expected = match options.target {
-        ProbeTarget::Live => "live",
-        ProbeTarget::Ready => "ready",
-    };
-    let result = (|| -> std::io::Result<String> {
-        use std::io::{Read, Write};
-        let mut stream =
-            std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(2))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
-        stream.write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
-        )?;
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-        Ok(response)
-    })();
-    match result {
-        Ok(response)
-            if response.starts_with("HTTP/1.1 200 ")
-                && response.contains(&format!("\"status\":\"{expected}\"")) =>
-        {
-            0
-        }
-        Ok(response) if response.starts_with("HTTP/1.1 503 ") => 1,
-        _ => 2,
     }
 }
 
@@ -500,31 +403,6 @@ fn read_owner_only_passphrase(path: &Path) -> std::io::Result<edge_domain::Sensi
     }
 }
 
-struct StartupAuditAdmission(AuditAdmissionState);
-
-impl AuditAdmissionController for StartupAuditAdmission {
-    fn state(&self) -> AuditAdmissionState {
-        self.0
-    }
-
-    fn replace_state(&mut self, state: AuditAdmissionState) {
-        self.0 = state;
-    }
-}
-
-struct FailClosedAuditInspector;
-
-impl AuditAuthoritativeStateInspector for FailClosedAuditInspector {
-    fn inspect(
-        &mut self,
-        _operation_id: &AuditOperationId,
-        _action: AuditAction,
-        _target_id: &AuditTargetId,
-    ) -> Result<AuditAuthoritativeFact, AppError> {
-        Ok(AuditAuthoritativeFact::Unknown)
-    }
-}
-
 fn run_serve() -> std::io::Result<()> {
     let config = bootstrap_config_from_env();
     let acme_client_mode = acme_client_mode_from_env()?;
@@ -793,69 +671,6 @@ fn run_serve() -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn install_sigterm_drain_watcher(
-    mut command_client: SnapshotRuntimeCommandClient,
-    lifecycle: Arc<std::sync::Mutex<OperationalLifecycle>>,
-    product_log: std::sync::mpsc::SyncSender<StructuredLogEvent>,
-) -> std::io::Result<()> {
-    SIGTERM_REQUESTED.store(false, std::sync::atomic::Ordering::Relaxed);
-    // SAFETY: the handler is an extern C function with the required signature;
-    // it only stores to SIGTERM_REQUESTED, which the watcher consumes outside
-    // signal context.
-    unsafe {
-        libc::signal(
-            libc::SIGTERM,
-            handle_sigterm as *const () as libc::sighandler_t,
-        );
-    }
-    std::thread::spawn(move || loop {
-        if SIGTERM_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            begin_sigterm_drain(&mut command_client, &lifecycle, &product_log);
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    });
-    Ok(())
-}
-
-fn begin_sigterm_drain<C>(
-    command_client: &mut C,
-    lifecycle: &Arc<std::sync::Mutex<OperationalLifecycle>>,
-    product_log: &std::sync::mpsc::SyncSender<StructuredLogEvent>,
-) where
-    C: CoreCommandClient,
-{
-    if let Ok(mut current) = lifecycle.lock() {
-        *current = current.transition(edge_domain::OperationalLifecycleEvent::TerminationRequested);
-    }
-    let acknowledgement = command_client.send(CoreCommand::BeginDrain {
-        deadline_ms: SIGTERM_DRAIN_DEADLINE_MS,
-    });
-    if !acknowledgement.is_success() {
-        if let Ok(mut current) = lifecycle.lock() {
-            *current = current.transition(edge_domain::OperationalLifecycleEvent::Failed);
-        }
-        let _ = product_log.try_send(StructuredLogEvent {
-            component: "edge-proxy".to_string(),
-            event: "process.drain.command_rejected".to_string(),
-            fields: vec![(
-                "error_code".to_string(),
-                "RUNTIME_COMMAND_REJECTED".to_string(),
-            )],
-        });
-    }
-}
-
-#[cfg(not(unix))]
-fn install_sigterm_drain_watcher(
-    _command_client: SnapshotRuntimeCommandClient,
-    _lifecycle: Arc<std::sync::Mutex<OperationalLifecycle>>,
-    _product_log: std::sync::mpsc::SyncSender<StructuredLogEvent>,
-) -> std::io::Result<()> {
-    Ok(())
-}
-
 fn acme_client_for_mode(mode: AcmeClientMode) -> Box<dyn AcmeClient + Send> {
     match mode {
         AcmeClientMode::Fake => Box::new(FakeAcmeClient::default()),
@@ -901,12 +716,6 @@ struct StartupProxyRuntime {
     tls: Option<TlsRuntimeSnapshot>,
     origin: StartupConfigOrigin,
     revision_id: ConfigRevisionId,
-}
-
-#[derive(Clone)]
-struct StartupHttpsListener {
-    bind: SocketAddr,
-    client_auth: ClientAuthPolicy,
 }
 
 #[derive(Clone)]
@@ -972,43 +781,6 @@ where
         loaded.push(load_rustls_server_config(&certificate)?);
     }
     TlsRuntimeSnapshot::from_configs(loaded).map(Some)
-}
-
-fn https_certificate_refs(snapshot: &ConfigSnapshot) -> Vec<CertificateRef> {
-    let mut refs = BTreeSet::new();
-    for route in snapshot.routes.iter().filter(|route| route.enabled) {
-        if let Some(certificate_ref) = &route.certificate_ref {
-            refs.insert(certificate_ref.clone());
-        }
-    }
-    refs.into_iter().collect()
-}
-
-fn https_listener_configs(snapshot: &ConfigSnapshot) -> std::io::Result<Vec<StartupHttpsListener>> {
-    let https_listeners: Vec<_> = snapshot
-        .listeners
-        .iter()
-        .filter(|listener| listener.protocol == ListenerProtocol::Https)
-        .collect();
-    if https_listeners.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    https_listeners
-        .into_iter()
-        .map(|listener| {
-            let bind = listener.bind.parse::<SocketAddr>().map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "HTTPS listener bind is invalid",
-                )
-            })?;
-            Ok(StartupHttpsListener {
-                bind,
-                client_auth: listener.client_auth.clone(),
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -1612,100 +1384,6 @@ fn publish_required_metric(
     }
 }
 
-fn record_audit_startup_log<L>(
-    sink: &mut L,
-    output: &edge_application::InitializeAuditLedgerOutput,
-) -> Result<(), AppError>
-where
-    L: LogSink + ?Sized,
-{
-    sink.record_log(StructuredLogEvent {
-        component: "audit".to_string(),
-        event: "audit.startup.ready".to_string(),
-        fields: vec![
-            (
-                "record_count".to_string(),
-                output.verified_record_count.to_string(),
-            ),
-            (
-                "incomplete_count".to_string(),
-                output.incomplete_count.to_string(),
-            ),
-            (
-                "reconciled_count".to_string(),
-                output.reconciled_count.to_string(),
-            ),
-            (
-                "admission_state".to_string(),
-                format!("{:?}", output.admission_state).to_ascii_lowercase(),
-            ),
-        ],
-    })
-}
-
-fn record_process_start_log<L>(
-    sink: &mut L,
-    config: &BootstrapConfig,
-    acme_client_mode: AcmeClientMode,
-) -> Result<(), edge_domain::AppError>
-where
-    L: LogSink,
-{
-    sink.record_log(StructuredLogEvent {
-        component: "edge-proxy".to_string(),
-        event: "process.start".to_string(),
-        fields: vec![
-            ("data_dir".to_string(), config.data_dir.clone()),
-            ("config_file".to_string(), config.config_file.clone()),
-            ("admin_bind".to_string(), config.admin_bind.clone()),
-            ("log_mode".to_string(), config.log_mode.as_str().to_string()),
-            (
-                "acme_client".to_string(),
-                acme_client_mode.as_str().to_string(),
-            ),
-        ],
-    })
-}
-
-fn record_startup_config_resolution_log<L>(
-    sink: &mut L,
-    origin: StartupConfigOrigin,
-    revision_id: &ConfigRevisionId,
-) -> Result<(), edge_domain::AppError>
-where
-    L: LogSink,
-{
-    sink.record_log(StructuredLogEvent {
-        component: "edge-proxy".to_string(),
-        event: "config.startup.resolved".to_string(),
-        fields: vec![
-            ("origin".to_string(), origin.as_str().to_string()),
-            ("revision_id".to_string(), revision_id.as_str().to_string()),
-        ],
-    })
-}
-
-fn record_upstream_tls_prepared_log<L>(
-    sink: &mut L,
-    revision_id: &ConfigRevisionId,
-    prepared_upstream_count: usize,
-) -> Result<(), AppError>
-where
-    L: LogSink,
-{
-    sink.record_log(StructuredLogEvent {
-        component: "edge-proxy".to_string(),
-        event: "upstream_tls.startup.prepared".to_string(),
-        fields: vec![
-            ("revision_id".to_string(), revision_id.as_str().to_string()),
-            (
-                "prepared_upstream_count".to_string(),
-                prepared_upstream_count.to_string(),
-            ),
-        ],
-    })
-}
-
 pub(crate) fn app_error_to_io(error: edge_domain::AppError) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
@@ -1861,12 +1539,14 @@ fn resource_limits_for_snapshot(snapshot: &ConfigSnapshot) -> ResourceLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edge_domain::LogMode;
+    use edge_domain::{BootstrapConfig, LogMode};
     use std::io::{Read, Write};
 
     #[derive(Default)]
     struct FakeUpgradeHelper {
         invocations: Vec<edge_adapters::UpgradeHelperInvocation>,
+        observed_invocations:
+            Option<std::sync::Arc<std::sync::Mutex<Vec<edge_adapters::UpgradeHelperInvocation>>>>,
         fail: bool,
     }
 
@@ -1882,7 +1562,10 @@ mod tests {
             } else {
                 String::new()
             };
-            self.invocations.push(invocation);
+            self.invocations.push(invocation.clone());
+            if let Some(observed) = &self.observed_invocations {
+                observed.lock().unwrap().push(invocation.clone());
+            }
             Ok(edge_adapters::UpgradeHelperProcessOutput {
                 exit_code: if self.fail { 1 } else { 0 },
                 stdout,
@@ -1937,6 +1620,7 @@ mod tests {
     #[test]
     fn upgrade_recover_uses_the_same_fixed_helper_and_journal_boundary() {
         let root = temp_root("upgrade-recover");
+        let observed_invocations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut journals = FileOfflineUpgradeJournalStore::new(&root).unwrap();
         edge_ports::OfflineUpgradeJournalStore::persist_upgrade_journal(
             &mut journals,
@@ -1955,10 +1639,29 @@ mod tests {
                 deployment: process_mode::UpgradeDeployment::Systemd,
                 operation_id: "upgrade-backup-1".to_string(),
             },
-            FakeUpgradeHelper::default(),
+            FakeUpgradeHelper {
+                observed_invocations: Some(std::sync::Arc::clone(&observed_invocations)),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(state, edge_domain::OfflineUpgradeState::RolledBack);
+        let invocations = observed_invocations.lock().unwrap();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(
+            invocations[0].executable,
+            std::path::PathBuf::from("/usr/local/libexec/sponzey-edge/upgrade-helper")
+        );
+        assert_eq!(
+            invocations[0].arguments,
+            vec![
+                "rollback".to_string(),
+                "--backup-id".to_string(),
+                "backup-1".to_string(),
+                "--previous-artifact-digest".to_string(),
+                "a".repeat(64),
+            ]
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2234,6 +1937,34 @@ mod tests {
         assert_eq!(tls.len(), 1);
         assert!(tls.get(&CertificateRef::new("cert-example")).is_some());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn manual_https_listener_selection_preserves_certificate_and_bind_contract() {
+        let snapshot = parse_mvp_config(
+            &https_config_source("cert-example"),
+            ConfigRevisionId::new("manual-https-selection"),
+        )
+        .unwrap()
+        .snapshot;
+
+        assert_eq!(
+            https_certificate_refs(&snapshot),
+            vec![CertificateRef::new("cert-example")]
+        );
+        let listeners = https_listener_configs(&snapshot).unwrap();
+        assert_eq!(listeners.len(), 1);
+        assert_eq!(listeners[0].bind.to_string(), "127.0.0.1:8443");
+        assert_eq!(listeners[0].client_auth, ClientAuthPolicy::Disabled);
+
+        let mut invalid = snapshot;
+        invalid.listeners.last_mut().unwrap().bind = "not-a-socket-address".to_string();
+        let error = match https_listener_configs(&invalid) {
+            Ok(_) => panic!("invalid HTTPS listener bind unexpectedly parsed"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "HTTPS listener bind is invalid");
     }
 
     #[test]
@@ -3492,16 +3223,19 @@ mod tests {
 
     #[test]
     fn https_proxy_connection_closes_idle_tls_handshake_on_timeout() {
+        let (upstream_addr, upstream) = spawn_text_backend("tls-timeout-recovered");
         let certificate = test_certificate("cert-example");
         let tls_config = load_rustls_server_config(&certificate).unwrap();
-        let snapshot = parse_mvp_config(
-            &https_config_source("cert-example"),
-            ConfigRevisionId::new("tls-timeout"),
-        )
-        .unwrap()
-        .snapshot;
         let https_addr = free_loopback_addr();
         let http_addr = free_loopback_addr();
+        let source = https_config_source_with_upstream(
+            "cert-example",
+            &upstream_addr.to_string(),
+            &https_addr.to_string(),
+        );
+        let snapshot = parse_mvp_config(&source, ConfigRevisionId::new("tls-timeout"))
+            .unwrap()
+            .snapshot;
         let limits = ResourceLimits {
             idle_timeout: std::time::Duration::from_millis(50),
             ..ResourceLimits::default()
@@ -3536,6 +3270,8 @@ mod tests {
         let started = std::time::Instant::now();
         let mut closed_payload = Vec::new();
         let read = client.read_to_end(&mut closed_payload);
+        let recovered_response = https_get(https_addr, &certificate.certificate_pem);
+        let upstream_request = upstream.join().unwrap();
         assert!(command_client.send(CoreCommand::Shutdown).is_success());
         runtime.join().unwrap().unwrap();
 
@@ -3551,6 +3287,11 @@ mod tests {
                 )),
             "client socket should be closed after timeout, got {read:?}"
         );
+        assert!(
+            recovered_response.ends_with("tls-timeout-recovered"),
+            "HTTPS listener did not recover after the timed-out handshake: {recovered_response:?}"
+        );
+        assert!(upstream_request.contains("X-Forwarded-Proto: https"));
         assert!(drop_counter.load(std::sync::atomic::Ordering::Relaxed) > 0);
         assert!(metric_receiver.try_iter().any(|metric| {
             metric.descriptor == edge_ports::MetricDescriptor::TlsHandshakeFailuresTotal

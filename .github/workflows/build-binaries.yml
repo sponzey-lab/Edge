@@ -15,7 +15,43 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: Source quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal --component clippy --component rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test workspace
+        run: cargo test --workspace -- --test-threads=1
+
+      - name: HTTP framing mutation smoke
+        run: cargo run -p edge-core --example http_framing_mutation_fuzz -- 1000
+
+      - name: Architecture fitness
+        run: python3 tools/release/check_architecture.py --workspace .
+
+      - name: Source index fitness
+        run: python3 tools/release/check_source_indexes.py --workspace .
+
+      - name: Dependency audit
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
+
   build:
+    needs: quality
     name: Build ${{ matrix.artifact_name }}
     runs-on: ${{ matrix.os }}
 
@@ -91,7 +127,7 @@ jobs:
 
   release:
     name: Publish Linux release and GHCR image
-    needs: build
+    needs: [quality, build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
@@ -174,11 +210,15 @@ jobs:
         if: steps.release_tag.outputs.publish == 'true'
         run: python3 tools/release/validate_release_manifest.py --manifest release-assets/release-manifest.json --artifacts release-assets
 
-      - name: Create GitHub Release
+      - name: Create GitHub prerelease candidate
         if: steps.release_tag.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: Sponzey Edge ${{ github.ref_name }}
+          body: |-
+            Candidate only: clean-host matrix evidence is required before product promotion.
+            Image: ghcr.io/sponzey-lab/sponzey-edge:${{ github.ref_name }}@${{ steps.image.outputs.digest }}
+          prerelease: true
           files: release-assets/*
           fail_on_unmatched_files: true

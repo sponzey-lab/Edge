@@ -172,22 +172,6 @@ and CSRF acquisition.
 - Do not increase queues without load evidence. First verify probe interval,
   target count, worker availability, and sink latency.
 
-## Post-MVP Let's Encrypt Staging Fails
-
-Use `docs/acme-staging.md` as the authoritative Post-MVP checklist. Verify:
-
-- the test hostname is approved and points to the edge host
-- public port `80/tcp` reaches the configured HTTP listener
-- the challenge path returns `200 OK` for the active token and `404 Not Found`
-
-  for unknown tokens
-- redirect rules do not intercept `/.well-known/acme-challenge/`
-- issue is requested through the authenticated Admin API with a CSRF token
-- `production` is false for staging
-- failure clears the HTTP-01 token and leaves the previous runtime snapshot and
-
-  current revision intact
-
 ## Manual Certificate Import Fails
 
 - `CERTIFICATE_INVALID`: verify chain PEM, key PEM, key/cert match, domains,

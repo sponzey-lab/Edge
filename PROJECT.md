@@ -1302,7 +1302,13 @@ Rust core는 차별점이지만, 동시에 부담이다.
 - 고급 기능은 단계적으로 붙인다.
 - "가장 빠른 proxy"가 아니라 "가장 안전하고 운영하기 쉬운 proxy"로 포지셔닝한다.
 
-## 11. MVP 정의
+## 11. Historical MVP Proposal (Not Current Execution Scope)
+
+이 절은 초기 제품 제안과 장기 roadmap을 보존한다. 현재 구현·지원 범위의 권위는
+`docs/current-state.md`, 실행·release 절차의 권위는 `docs/release-gate.md`다. 특히 아래의
+ACME, Let's Encrypt, HTTP-01, DNS-01, 자동 갱신 언급은 현재 기능 또는 작업 지시가 아니다.
+사용자가 명시적으로 범위를 재개하기 전까지 단일 노드 제품은 manual/file-backed certificate와
+private PKI만 지원한다.
 
 ### 11.1 MVP 목표
 
@@ -1310,7 +1316,9 @@ Rust core는 차별점이지만, 동시에 부담이다.
 
 MVP는 아래 사용자가 바로 쓸 수 있어야 한다.
 
-> 사용자가 `app.example.com -> http://127.0.0.1:3000` proxy host를 웹 UI에서 추가하면, Let's Encrypt 인증서가 자동 발급되고 HTTPS reverse proxy가 동작한다.
+> 사용자가 `app.example.com -> http://127.0.0.1:3000` proxy host를 웹 UI에서 추가하고
+> manual/file-backed certificate 또는 private PKI certificate를 등록·선택하면 HTTPS reverse
+> proxy가 동작한다.
 
 ### 11.2 MVP에 반드시 포함할 기능
 
@@ -1332,14 +1340,13 @@ Core:
 - zero-downtime에 가까운 reload
 - previous config rollback
 
-TLS/ACME:
+TLS/certificate:
 
-- Let's Encrypt HTTP-01
-- staging/production ACME 선택
-- 자동 인증서 저장
-- 자동 갱신 스케줄러
+- manual/file-backed certificate 등록과 저장
+- private PKI chain 검증과 SNI 선택
+- 새 connection에 대한 certificate hot install
 - 인증서 만료일 표시
-- 수동 인증서 등록은 MVP 후순위
+- 자동 ACME 발급·갱신은 명시 재개 전 Post-MVP 보류
 
 Admin API:
 
@@ -1356,7 +1363,7 @@ Admin Web UI:
 - proxy host 목록
 - proxy host 생성/수정/삭제
 - upstream URL 입력
-- Let's Encrypt 활성화 체크박스
+- manual certificate 선택·상태 표시
 - HTTPS redirect 체크박스
 - 설정 적용 전 validation 표시
 - 최근 access log 표시
@@ -1373,6 +1380,8 @@ Admin Web UI:
 
 - Kubernetes
 - Docker discovery
+- Let's Encrypt/ACME 자동 발급과 갱신
+- HTTP-01 challenge
 - DNS-01
 - wildcard certificate
 - multi-user RBAC
@@ -1390,7 +1399,7 @@ Admin Web UI:
 기능 기준:
 
 - 웹 UI에서 proxy host를 만들 수 있다.
-- Let's Encrypt staging으로 인증서를 발급할 수 있다.
+- manual/file-backed certificate 또는 private PKI certificate로 HTTPS route를 구성할 수 있다.
 - HTTPS로 backend 서비스에 접근할 수 있다.
 - 잘못된 upstream/config는 적용 전에 차단된다.
 - config apply 실패 시 기존 proxy가 계속 동작한다.
@@ -1407,7 +1416,7 @@ Admin Web UI:
 
 - 단일 노드에서 일반 소규모 서비스 트래픽 처리
 - idle connection 누수 없음
-- 인증서 자동 갱신 dry-run 테스트 가능
+- certificate import/validation failure가 기존 route를 깨뜨리지 않음
 - 기본 보안 스캔 통과
 
 ## 12. 개발 단계
@@ -1441,7 +1450,11 @@ Admin Web UI:
 - core daemon 시작/종료 가능
 - 기본 access log 출력
 
-### Phase 1. MVP: Simple NGINX Replacement
+### Phase 1. Original MVP Proposal (Historical)
+
+이 원래 제안의 ACME account, HTTP-01, renewal scheduler 항목은 현재 실행 계획에 포함되지
+않는다. 현재 제품화 범위는 위의 manual/file-backed certificate 및 private PKI 운영 계약을
+따른다.
 
 목표:
 

@@ -1,0 +1,59 @@
+name: Promote Release Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Immutable SemVer candidate tag to promote
+        required: true
+        type: string
+      evidence_path:
+        description: Committed promotion evidence JSON path
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: Promote validated candidate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Verify evidence path is tracked
+        run: git ls-files --error-unmatch -- "${{ inputs.evidence_path }}"
+
+      - name: Resolve immutable candidate identity
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.tag }}"
+          test "$(gh release view "${tag}" --json isPrerelease --jq '.isPrerelease')" = "true"
+          commit="$(git rev-list -n 1 "${tag}")"
+          image="$(gh release view "${tag}" --json body --jq '.body' | sed -n 's/^Image: \(ghcr.io\/sponzey-lab\/sponzey-edge:.*@sha256:[0-9a-f]\{64\}\)$/\1/p')"
+          test -n "${image}"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate promotion evidence
+        run: >-
+          python3 tools/release/validate_promotion_evidence.py
+          --evidence "${{ inputs.evidence_path }}"
+          --tag "${{ inputs.tag }}"
+          --commit "${{ steps.candidate.outputs.commit }}"
+          --image "${{ steps.candidate.outputs.image }}"
+
+      - name: Promote GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ inputs.tag }}" --prerelease=false --latest

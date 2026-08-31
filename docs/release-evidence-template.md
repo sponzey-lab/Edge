@@ -40,6 +40,38 @@ The tag, commit, archive checksums, SBOM, OCI label, and immutable image digest
 must identify the same release. A mutable tag without its matching digest is not
 sufficient.
 
+## Promotion Evidence JSON
+
+The SemVer workflow creates a prerelease candidate only. After completing every
+clean-host cell, commit a secret-free file at
+`release-evidence/<semver_tag>/promotion.json` with this exact shape, replacing
+the placeholders with the candidate identity and outcomes:
+
+```json
+{
+  "schema_version": 1,
+  "tag": "vMAJOR.MINOR.PATCH",
+  "commit": "40-lowercase-hex-commit",
+  "image": "ghcr.io/sponzey-lab/sponzey-edge:vMAJOR.MINOR.PATCH@sha256:64-lowercase-hex",
+  "source_quality": "passed",
+  "support_bundle": "passed",
+  "manual_or_private_pki_only": true,
+  "certificate_automation_deferred": true,
+  "matrix": [
+    { "deployment": "compose", "platform": "linux-amd64", "status": "passed" },
+    { "deployment": "compose", "platform": "linux-arm64", "status": "passed" },
+    { "deployment": "systemd", "platform": "linux-amd64", "status": "passed" },
+    { "deployment": "systemd", "platform": "linux-arm64", "status": "passed" }
+  ]
+}
+```
+
+Dispatch `.github/workflows/promote-release.yml` only after a reviewer has
+verified the command transcripts referenced below. The workflow validates this
+file against the immutable tag commit and prerelease image digest, then changes
+only that GitHub prerelease to a product release. It does not create a tag,
+replace an image, or perform certificate automation.
+
 ## Source-Level Gate
 
 Record the complete output and exit code for each command executed against the

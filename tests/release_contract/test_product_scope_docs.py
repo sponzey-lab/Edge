@@ -55,6 +55,16 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
         self.assertNotIn("scripts/check_acme_staging", release_gate)
         self.assertNotIn("scripts/check_mvp_release_ready.sh", release_gate)
 
+    def test_deferred_acme_document_is_archive_only_and_not_a_troubleshooting_runbook(self) -> None:
+        archive = (ROOT / "docs" / "acme-staging.md").read_text(encoding="utf-8")
+        troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8")
+
+        self.assertIn("archive-only", archive)
+        self.assertIn("explicitly reopens", archive)
+        self.assertNotIn("SPONZEY_ACME_CLIENT=", archive)
+        self.assertNotIn("./scripts/", archive)
+        self.assertNotIn("Post-MVP Let's Encrypt Staging Fails", troubleshooting)
+
 
 if __name__ == "__main__":
     unittest.main()

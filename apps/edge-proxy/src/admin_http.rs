@@ -8,13 +8,25 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::admin_audit::{
+    admin_audit_context, audit_failure_response, complete_audited_admin_response,
+    json_string_field, response_revision_id,
+};
+pub use crate::admin_log_ingestion::AdminLogReceivers;
+use crate::admin_log_ingestion::{spawn_access_log_collector, spawn_error_log_collector};
+use crate::admin_static_assets::handle_static_admin_asset;
+use crate::admin_trust_bundles::{current_epoch_seconds, TrustBundleRuntimeService};
+
+pub use crate::runtime_status::{
+    SharedOperationalRuntimeStatus, SharedRuntimeResourceStatus, SharedRuntimeUpstreamStatus,
+};
+
 #[cfg(test)]
 use edge_adapters::{AuditLedgerOptions, FileAuditLedger, MetricChannelPublisher};
 use edge_adapters::{
     FakeAcmeClient, FileCertificateStore, FileRevisionRepository, FileSecretStore,
     FileSupportBundleCollector, FileTrustBundleStore, MemoryCertificateStore, MemoryLogSink,
-    RustlsCertificateMaterialValidator, RustlsTrustBundleMaterialValidator, SharedAuditAdmission,
-    SharedFileAuditLedger,
+    RustlsCertificateMaterialValidator, SharedAuditAdmission, SharedFileAuditLedger,
 };
 use edge_admin_api::{
     handle_access_logs_http, handle_audit_query_http, handle_certificate_get_http,
@@ -26,201 +38,34 @@ use edge_admin_api::{
     handle_support_bundle_http, handle_trust_bundle_http, handle_upstream_health_http,
     parse_admin_http_request, render_admin_http_response, require_csrf, require_session,
     AdminAuthenticator, AdminHttpMethod, AdminHttpRequest, AdminHttpResponse,
-    AdminHttpRuntimeContext, SessionStore, TrustBundleAdminService,
+    AdminHttpRuntimeContext, SessionStore,
 };
 use edge_application::{
     admin_setup_audit_operation, begin_audit_operation, certificate_audit_operation,
-    complete_audit_operation, config_activation_state, config_audit_operation, delete_trust_bundle,
-    failure_aware_metric, import_trust_bundle, list_trust_bundles, proxy_host_audit_operation,
-    record_security_observation, structured_certificate_mutation_log, structured_failure_aware_log,
+    complete_audit_operation, config_activation_state, config_audit_operation,
+    proxy_host_audit_operation, record_security_observation, structured_certificate_mutation_log,
     structured_manual_certificate_import_log, AccessLogEvent, AuditSecurityObservationInput,
     AuthFailureAuditSampler, CertificateIssuer, CompleteAuditOperationInput, ConfigLifecycle,
-    ConfigValidator, FailureAwareEvent, FailureAwareTransition, Http01TokenStore,
-    ImportTrustBundleInput, MetricSnapshotReaderPort, RecentAccessLogBuffer, RecentErrorBuffer,
-    RecentErrorEvent,
+    ConfigValidator, Http01TokenStore, MetricSnapshotReaderPort, RecentAccessLogBuffer,
+    RecentErrorBuffer, RecentErrorEvent,
 };
 use edge_domain::{
-    AuditAction, AuditActorKind, AuditContext, AuditEffectState, AuditOperationId, AuditOutcome,
-    AuditRequestId, AuditStableErrorCode, AuditTargetId, CertificateRef, ConfigSnapshot, ErrorCode,
-    LogMode, OperationalLifecycle, OperationalRuntimeFacts, TrustBundleRef,
+    AuditAction, AuditEffectState, AuditOutcome, AuditStableErrorCode, AuditTargetId,
+    CertificateRef, ConfigSnapshot, ErrorCode, LogMode, OperationalLifecycle,
 };
+#[cfg(test)]
+use edge_ports::RuntimeUpstreamStatusPublisher;
 use edge_ports::{
     AcmeClient, AuditEvent, AuditSink, CertificateMaterialValidator, CertificateStore,
     ConfigRevisionRepository, CoreCommandClient, HealthStatusReader, Http01ChallengeProbe,
-    Http01ChallengeResponder, Http01ChallengeStore, LogSink, MetricPublishOutcome, MetricPublisher,
-    OperationalRuntimeStatusPublisher, OperationalRuntimeStatusReader, RetainedConfigSnapshots,
-    RuntimeResourceStatusPublishOutcome, RuntimeResourceStatusPublisher,
-    RuntimeResourceStatusReader, RuntimeResourceStatusSnapshot, RuntimeUpstreamStatusPublisher,
-    RuntimeUpstreamStatusReader, RuntimeUpstreamStatusSnapshot, StructuredLogEvent,
-    TrustBundleEventSink, TrustBundleMetadata, TrustBundleOperationEvent,
+    Http01ChallengeResponder, Http01ChallengeStore, LogSink, OperationalRuntimeStatusReader,
+    RuntimeResourceStatusReader, RuntimeResourceStatusSnapshot, RuntimeUpstreamStatusReader,
+    RuntimeUpstreamStatusSnapshot,
 };
 
 const DEFAULT_MAX_ADMIN_REQUEST_BYTES: usize = 512 * 1024;
 const DEFAULT_RECENT_LOG_CAPACITY: usize = 100;
 const DEFAULT_CERTIFICATE_RENEWAL_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
-
-#[derive(Clone, Default)]
-pub struct SharedOperationalRuntimeStatus(Arc<Mutex<Option<OperationalRuntimeFacts>>>);
-
-impl OperationalRuntimeStatusPublisher for SharedOperationalRuntimeStatus {
-    fn publish_operational_runtime_facts(&self, facts: OperationalRuntimeFacts) {
-        if let Ok(mut current) = self.0.lock() {
-            *current = Some(facts);
-        }
-    }
-}
-
-impl OperationalRuntimeStatusReader for SharedOperationalRuntimeStatus {
-    fn read_operational_runtime_facts(
-        &self,
-    ) -> Result<OperationalRuntimeFacts, edge_domain::AppError> {
-        self.0
-            .lock()
-            .map_err(|_| {
-                edge_domain::AppError::new(
-                    ErrorCode::InternalBug,
-                    "operational runtime status lock poisoned",
-                )
-            })?
-            .ok_or_else(|| {
-                edge_domain::AppError::new(
-                    ErrorCode::RuntimeHealthUnavailable,
-                    "operational runtime status unavailable",
-                )
-            })
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct SharedRuntimeUpstreamStatus {
-    snapshot: Arc<Mutex<Option<RuntimeUpstreamStatusSnapshot>>>,
-    product_log: Option<mpsc::SyncSender<edge_ports::StructuredLogEvent>>,
-    metrics: Option<Arc<dyn MetricPublisher>>,
-    dropped: Option<Arc<AtomicU64>>,
-}
-
-impl SharedRuntimeUpstreamStatus {
-    pub fn with_observability(
-        product_log: mpsc::SyncSender<edge_ports::StructuredLogEvent>,
-        metrics: Arc<dyn MetricPublisher>,
-        dropped: Arc<AtomicU64>,
-    ) -> Self {
-        Self {
-            snapshot: Arc::new(Mutex::new(None)),
-            product_log: Some(product_log),
-            metrics: Some(metrics),
-            dropped: Some(dropped),
-        }
-    }
-}
-
-impl RuntimeUpstreamStatusPublisher for SharedRuntimeUpstreamStatus {
-    fn publish_runtime_status(&self, snapshot: RuntimeUpstreamStatusSnapshot) {
-        if let Ok(mut current) = self.snapshot.try_lock() {
-            if let Some(previous) = current.as_ref() {
-                for item in &snapshot.upstreams {
-                    let old = previous.upstreams.iter().find(|old| old.key == item.key);
-                    let transition = match (old.map(|old| old.state), item.state) {
-                        (
-                            Some(edge_ports::RuntimeDrainState::Active),
-                            edge_ports::RuntimeDrainState::Draining
-                            | edge_ports::RuntimeDrainState::Drained,
-                        ) => Some(FailureAwareTransition::DrainStarted),
-                        (
-                            Some(edge_ports::RuntimeDrainState::Draining),
-                            edge_ports::RuntimeDrainState::Drained,
-                        ) => Some(FailureAwareTransition::DrainCompleted),
-                        _ => None,
-                    };
-                    if let Some(transition) = transition {
-                        let event = FailureAwareEvent {
-                            transition,
-                            revision_id: snapshot.revision_id.clone(),
-                            generation: edge_domain::HealthGeneration(snapshot.generation),
-                            key: Some(item.key.clone()),
-                            reason: Some("config_revision"),
-                            connection_count: Some(item.connection_count),
-                        };
-                        let dropped = self.product_log.as_ref().is_some_and(|sender| {
-                            sender
-                                .try_send(structured_failure_aware_log(&event))
-                                .is_err()
-                        }) | self.metrics.as_ref().is_some_and(|publisher| {
-                            publisher.try_publish(failure_aware_metric(&event))
-                                != MetricPublishOutcome::Accepted
-                        });
-                        if dropped {
-                            if let Some(counter) = &self.dropped {
-                                counter.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                    }
-                }
-            }
-            *current = Some(snapshot);
-        }
-    }
-}
-
-impl RuntimeUpstreamStatusReader for SharedRuntimeUpstreamStatus {
-    fn read_runtime_status(&self) -> Result<RuntimeUpstreamStatusSnapshot, edge_domain::AppError> {
-        self.snapshot
-            .lock()
-            .map_err(|_| {
-                edge_domain::AppError::new(ErrorCode::InternalBug, "runtime status lock poisoned")
-            })?
-            .clone()
-            .ok_or_else(|| {
-                edge_domain::AppError::new(
-                    ErrorCode::RuntimeHealthUnavailable,
-                    "runtime status unavailable",
-                )
-            })
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct SharedRuntimeResourceStatus {
-    snapshot: Arc<Mutex<Option<RuntimeResourceStatusSnapshot>>>,
-}
-
-impl RuntimeResourceStatusPublisher for SharedRuntimeResourceStatus {
-    fn try_publish_resource_status(
-        &self,
-        snapshot: RuntimeResourceStatusSnapshot,
-    ) -> RuntimeResourceStatusPublishOutcome {
-        match self.snapshot.try_lock() {
-            Ok(mut current) => {
-                *current = Some(snapshot);
-                RuntimeResourceStatusPublishOutcome::Accepted
-            }
-            Err(std::sync::TryLockError::WouldBlock) => RuntimeResourceStatusPublishOutcome::Full,
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                RuntimeResourceStatusPublishOutcome::Stopped
-            }
-        }
-    }
-}
-
-impl RuntimeResourceStatusReader for SharedRuntimeResourceStatus {
-    fn read_resource_status(&self) -> Result<RuntimeResourceStatusSnapshot, edge_domain::AppError> {
-        self.snapshot
-            .lock()
-            .map_err(|_| {
-                edge_domain::AppError::new(
-                    ErrorCode::InternalBug,
-                    "runtime resource status lock poisoned",
-                )
-            })?
-            .clone()
-            .ok_or_else(|| {
-                edge_domain::AppError::new(
-                    ErrorCode::RuntimeHealthUnavailable,
-                    "runtime resource status unavailable",
-                )
-            })
-    }
-}
 
 #[derive(Clone, Default)]
 pub struct SharedHttp01TokenStore {
@@ -478,226 +323,6 @@ impl AuditSink for NoopLegacyAuditSink {
     }
 }
 
-struct RetainedRevisionSnapshots(FileRevisionRepository);
-
-impl RetainedConfigSnapshots for RetainedRevisionSnapshots {
-    fn retained_config_snapshots(&self) -> Result<Vec<ConfigSnapshot>, edge_domain::AppError> {
-        Ok(self
-            .0
-            .history()?
-            .into_iter()
-            .map(|record| record.snapshot)
-            .collect())
-    }
-}
-
-struct TrustBundleRuntimeEvents {
-    product_log: Arc<Mutex<Box<dyn LogSink + Send>>>,
-    audit: NoopLegacyAuditSink,
-}
-
-impl TrustBundleEventSink for TrustBundleRuntimeEvents {
-    fn record_trust_product_event(&mut self, event: TrustBundleOperationEvent) {
-        let mut fields = vec![
-            (
-                "trust_bundle_ref".to_string(),
-                event.trust_bundle_ref.as_str().to_string(),
-            ),
-            ("outcome".to_string(), event.outcome.to_string()),
-        ];
-        if let Some(count) = event.certificate_count {
-            fields.push(("certificate_count".to_string(), count.to_string()));
-        }
-        if let Some(code) = event.error_code {
-            fields.push(("error_code".to_string(), code.as_str().to_string()));
-        }
-        if let Ok(mut sink) = self.product_log.lock() {
-            let _ = sink.record_log(StructuredLogEvent {
-                component: "admin-api".to_string(),
-                event: event.event.to_string(),
-                fields,
-            });
-        }
-    }
-
-    fn record_trust_audit_event(&mut self, event: TrustBundleOperationEvent) {
-        let _ = self.audit.record(AuditEvent {
-            event: format!("{}.{}", event.event, event.outcome),
-            revision_id: None,
-        });
-    }
-}
-
-struct TrustBundleRuntimeService {
-    validator: RustlsTrustBundleMaterialValidator,
-    store: FileTrustBundleStore,
-    revisions: RetainedRevisionSnapshots,
-    events: TrustBundleRuntimeEvents,
-    durable_audit: Option<(SharedFileAuditLedger, SharedAuditAdmission)>,
-}
-
-impl TrustBundleAdminService for TrustBundleRuntimeService {
-    fn import(
-        &mut self,
-        request_id: &str,
-        trust_bundle_ref: TrustBundleRef,
-        encoded_material: Vec<u8>,
-    ) -> Result<TrustBundleMetadata, edge_domain::AppError> {
-        let imported_at_epoch_seconds = current_epoch_seconds().map_err(|_| {
-            edge_domain::AppError::new(ErrorCode::InternalBug, "system clock is unavailable")
-        })?;
-        let audit = self.durable_audit.clone();
-        let operation = prepare_trust_audit(
-            audit.as_ref(),
-            request_id,
-            imported_at_epoch_seconds,
-            AuditAction::TrustBundleImport,
-            &trust_bundle_ref,
-        )?;
-        let begin = begin_optional_audit(audit.as_ref(), operation.as_ref())?;
-        let result = import_trust_bundle(
-            &mut self.validator,
-            &mut self.store,
-            &mut self.events,
-            ImportTrustBundleInput {
-                request_id: request_id.to_string(),
-                trust_bundle_ref,
-                encoded_material,
-                imported_at_epoch_seconds,
-            },
-        );
-        complete_optional_audit(audit, operation, begin, result)
-    }
-
-    fn list(&mut self) -> Result<Vec<TrustBundleMetadata>, edge_domain::AppError> {
-        list_trust_bundles(&mut self.store)
-    }
-
-    fn delete(&mut self, trust_bundle_ref: TrustBundleRef) -> Result<(), edge_domain::AppError> {
-        let timestamp = current_epoch_seconds().map_err(|_| {
-            edge_domain::AppError::new(ErrorCode::InternalBug, "system clock is unavailable")
-        })?;
-        let request_id = format!("trust-delete-{}", trust_bundle_ref.as_str());
-        let audit = self.durable_audit.clone();
-        let operation = prepare_trust_audit(
-            audit.as_ref(),
-            &request_id,
-            timestamp,
-            AuditAction::TrustBundleDelete,
-            &trust_bundle_ref,
-        )?;
-        let begin = begin_optional_audit(audit.as_ref(), operation.as_ref())?;
-        let result = delete_trust_bundle(
-            &mut self.store,
-            &self.revisions,
-            &mut self.events,
-            trust_bundle_ref,
-        );
-        complete_optional_audit(audit, operation, begin, result)
-    }
-}
-
-fn prepare_trust_audit(
-    audit: Option<&(SharedFileAuditLedger, SharedAuditAdmission)>,
-    request_id: &str,
-    timestamp: u64,
-    action: AuditAction,
-    trust_bundle_ref: &TrustBundleRef,
-) -> Result<Option<edge_application::AuditPersistentOperationInput>, edge_domain::AppError> {
-    if audit.is_none() {
-        return Ok(None);
-    }
-    let context = AuditContext {
-        operation_id: AuditOperationId::parse(format!("operation-{request_id}")).map_err(|_| {
-            edge_domain::AppError::new(
-                ErrorCode::AuditRecordInvalid,
-                "invalid trust audit operation id",
-            )
-        })?,
-        request_id: AuditRequestId::parse(request_id).map_err(|_| {
-            edge_domain::AppError::new(
-                ErrorCode::AuditRecordInvalid,
-                "invalid trust audit request id",
-            )
-        })?,
-        actor_kind: AuditActorKind::BootstrapAdmin,
-        received_at_epoch_seconds: timestamp,
-    };
-    edge_application::trust_audit_operation(
-        context,
-        action,
-        AuditTargetId::parse(trust_bundle_ref.as_str()).map_err(|_| {
-            edge_domain::AppError::new(
-                ErrorCode::AuditRecordInvalid,
-                "invalid trust bundle audit target",
-            )
-        })?,
-    )
-    .map(Some)
-}
-
-fn begin_optional_audit(
-    audit: Option<&(SharedFileAuditLedger, SharedAuditAdmission)>,
-    operation: Option<&edge_application::AuditPersistentOperationInput>,
-) -> Result<Option<edge_application::BeginAuditOperationOutput>, edge_domain::AppError> {
-    match (audit, operation) {
-        (Some((ledger, admission)), Some(operation)) => {
-            let mut ledger = ledger.clone();
-            begin_audit_operation(&mut ledger, admission, operation.clone())
-                .map(Some)
-                .map_err(|failure| failure.error)
-        }
-        _ => Ok(None),
-    }
-}
-
-fn complete_optional_audit<T>(
-    audit: Option<(SharedFileAuditLedger, SharedAuditAdmission)>,
-    operation: Option<edge_application::AuditPersistentOperationInput>,
-    begin: Option<edge_application::BeginAuditOperationOutput>,
-    effect: Result<T, edge_domain::AppError>,
-) -> Result<T, edge_domain::AppError> {
-    let (Some((mut ledger, mut admission)), Some(operation), Some(begin)) =
-        (audit, operation, begin)
-    else {
-        return effect;
-    };
-    let (effect_state, stable_error) = match &effect {
-        Ok(_) => (AuditEffectState::Committed, None),
-        Err(error) => (
-            AuditEffectState::Rejected,
-            AuditStableErrorCode::parse(error.code.as_str()).ok(),
-        ),
-    };
-    match complete_audit_operation(
-        &mut ledger,
-        &mut admission,
-        CompleteAuditOperationInput {
-            operation,
-            expected_head: begin.head,
-            effect_state,
-            after_revision: None,
-            error_code: stable_error,
-        },
-    ) {
-        Ok(_) => effect,
-        Err(failure) => Err(edge_domain::AppError::new(
-            failure.error.code,
-            if effect_state == AuditEffectState::Committed {
-                "trust mutation committed but audit terminal persistence failed"
-            } else {
-                "trust mutation failed and audit terminal persistence also failed"
-            },
-        )),
-    }
-}
-
-pub struct AdminLogReceivers {
-    pub access: mpsc::Receiver<AccessLogEvent>,
-    pub error: mpsc::Receiver<RecentErrorEvent>,
-    pub dropped: Arc<AtomicU64>,
-}
-
 pub struct AdminHttpStores {
     pub secrets: FileSecretStore,
     pub revisions: FileRevisionRepository,
@@ -805,16 +430,12 @@ impl AdminHttpServerState {
         store: FileTrustBundleStore,
         revisions: FileRevisionRepository,
     ) -> Self {
-        self.trust_bundles = Some(Arc::new(Mutex::new(TrustBundleRuntimeService {
-            validator: RustlsTrustBundleMaterialValidator,
+        self.trust_bundles = Some(Arc::new(Mutex::new(TrustBundleRuntimeService::new(
             store,
-            revisions: RetainedRevisionSnapshots(revisions),
-            events: TrustBundleRuntimeEvents {
-                product_log: Arc::clone(&self.product_log),
-                audit: NoopLegacyAuditSink,
-            },
-            durable_audit: self.durable_audit.clone(),
-        })));
+            revisions,
+            Arc::clone(&self.product_log),
+            self.durable_audit.clone(),
+        ))));
         self
     }
 
@@ -985,34 +606,6 @@ where
             eprintln!("admin http connection error: {error}");
         }
     }))
-}
-
-fn spawn_access_log_collector(
-    access_logs: Arc<Mutex<RecentAccessLogBuffer>>,
-    receiver: mpsc::Receiver<AccessLogEvent>,
-) {
-    thread::spawn(move || {
-        while let Ok(event) = receiver.recv() {
-            let Ok(mut access_logs) = access_logs.lock() else {
-                break;
-            };
-            access_logs.push(event);
-        }
-    });
-}
-
-fn spawn_error_log_collector(
-    error_logs: Arc<Mutex<RecentErrorBuffer>>,
-    receiver: mpsc::Receiver<RecentErrorEvent>,
-) {
-    thread::spawn(move || {
-        while let Ok(event) = receiver.recv() {
-            let Ok(mut error_logs) = error_logs.lock() else {
-                break;
-            };
-            error_logs.push(event);
-        }
-    });
 }
 
 pub fn serve_next_admin_http_connection(
@@ -1442,38 +1035,6 @@ fn handle_admin_http_stream(mut stream: TcpStream, state: &AdminHttpServerState)
     stream.flush()
 }
 
-fn handle_static_admin_asset(request: &AdminHttpRequest) -> Option<AdminHttpResponse> {
-    if request.method != AdminHttpMethod::Get {
-        return None;
-    }
-    let path = request
-        .path
-        .split('?')
-        .next()
-        .unwrap_or(request.path.as_str());
-    let (content_type, body) = match path {
-        "/" | "/index.html" => (
-            "text/html; charset=utf-8",
-            include_str!("../../admin-web/index.html"),
-        ),
-        "/styles.css" => (
-            "text/css; charset=utf-8",
-            include_str!("../../admin-web/styles.css"),
-        ),
-        "/app.js" => (
-            "application/javascript; charset=utf-8",
-            include_str!("../../admin-web/app.js"),
-        ),
-        _ => return None,
-    };
-    Some(AdminHttpResponse {
-        status_code: 200,
-        headers: vec![("content-type".to_string(), content_type.to_string())],
-        body: body.to_string(),
-        error_code: None,
-    })
-}
-
 fn is_bound_lifecycle_request(request: &AdminHttpRequest) -> bool {
     matches!(
         (request.method, request.path.as_str()),
@@ -1794,106 +1355,6 @@ fn lifecycle_audit_operation(
     }
 }
 
-fn admin_audit_context(request: &AdminHttpRequest) -> Result<AuditContext, edge_domain::AppError> {
-    let request_id = AuditRequestId::parse(&request.request_id).map_err(|_| {
-        edge_domain::AppError::new(
-            ErrorCode::AuditRecordInvalid,
-            "admin request id is not audit-safe",
-        )
-    })?;
-    let operation_id = AuditOperationId::parse(format!("operation-{}", request.request_id))
-        .map_err(|_| {
-            edge_domain::AppError::new(
-                ErrorCode::AuditRecordInvalid,
-                "admin operation id is not audit-safe",
-            )
-        })?;
-    Ok(AuditContext {
-        operation_id,
-        request_id,
-        actor_kind: AuditActorKind::BootstrapAdmin,
-        received_at_epoch_seconds: current_epoch_seconds().map_err(|_| {
-            edge_domain::AppError::new(ErrorCode::InternalBug, "system clock is unavailable")
-        })?,
-    })
-}
-
-fn json_string_field(body: &str, field: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()?
-        .get(field)?
-        .as_str()
-        .map(str::to_string)
-}
-
-fn response_revision_id(response: &AdminHttpResponse) -> Option<String> {
-    json_string_field(&response.body, "revision_id")
-}
-
-fn audit_failure_response(
-    request: &AdminHttpRequest,
-    status_code: u16,
-    error: &edge_domain::AppError,
-    effect_committed: bool,
-) -> AdminHttpResponse {
-    AdminHttpResponse {
-        status_code,
-        headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: serde_json::json!({
-            "request_id": request.request_id,
-            "error_code": error.code.as_str(),
-            "message": error.code.default_user_message(),
-            "effect_committed": effect_committed,
-        })
-        .to_string(),
-        error_code: Some(error.code.as_str().to_string()),
-    }
-}
-
-fn complete_audited_admin_response(
-    request: &AdminHttpRequest,
-    response: AdminHttpResponse,
-    ledger: &mut SharedFileAuditLedger,
-    admission: &mut SharedAuditAdmission,
-    operation: edge_application::AuditPersistentOperationInput,
-    expected_head: edge_domain::AuditLedgerHead,
-) -> AdminHttpResponse {
-    let committed = (200..300).contains(&response.status_code);
-    let error_code = if committed {
-        None
-    } else {
-        AuditStableErrorCode::parse(
-            response
-                .error_code
-                .as_deref()
-                .unwrap_or(ErrorCode::InternalBug.as_str()),
-        )
-        .ok()
-        .or_else(|| AuditStableErrorCode::parse(ErrorCode::InternalBug.as_str()).ok())
-    };
-    match complete_audit_operation(
-        ledger,
-        admission,
-        CompleteAuditOperationInput {
-            operation,
-            expected_head,
-            effect_state: if committed {
-                AuditEffectState::Committed
-            } else {
-                AuditEffectState::Rejected
-            },
-            after_revision: committed
-                .then(|| response_revision_id(&response))
-                .flatten()
-                .and_then(|revision| AuditTargetId::parse(revision).ok()),
-            error_code,
-        },
-    ) {
-        Ok(_) => response,
-        Err(failure) => audit_failure_response(request, 503, &failure.error, committed),
-    }
-}
-
 fn record_auth_observation(
     state: &AdminHttpServerState,
     request: &AdminHttpRequest,
@@ -2033,7 +1494,7 @@ fn read_admin_http_request(stream: &mut TcpStream, max_bytes: usize) -> io::Resu
                 "admin HTTP request is too large",
             ));
         }
-        if request_is_complete(&buffer) {
+        if request_completeness(&buffer)? {
             break;
         }
     }
@@ -2045,23 +1506,47 @@ fn read_admin_http_request(stream: &mut TcpStream, max_bytes: usize) -> io::Resu
     })
 }
 
+#[cfg(test)]
 fn request_is_complete(buffer: &[u8]) -> bool {
+    request_completeness(buffer).unwrap_or(false)
+}
+
+fn request_completeness(buffer: &[u8]) -> io::Result<bool> {
     let Some(header_end) = find_header_end(buffer) else {
-        return false;
+        return Ok(false);
     };
-    let headers = String::from_utf8_lossy(&buffer[..header_end]);
-    let content_length = headers.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.trim()
-            .eq_ignore_ascii_case("content-length")
-            .then(|| value.trim().parse::<usize>().ok())
-            .flatten()
-    });
+    let headers = std::str::from_utf8(&buffer[..header_end]).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "admin HTTP request headers are not valid UTF-8",
+        )
+    })?;
+    let mut content_length = None;
+    for line in headers.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !name.trim().eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        let value = value.trim().parse::<usize>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "admin HTTP request content length is invalid",
+            )
+        })?;
+        if content_length.replace(value).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "admin HTTP request content length is ambiguous",
+            ));
+        }
+    }
     let body_start = header_end + 4;
-    match content_length {
+    Ok(match content_length {
         Some(length) => buffer.len().saturating_sub(body_start) >= length,
         None => true,
-    }
+    })
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
@@ -2075,23 +1560,20 @@ fn app_error_to_io(error: edge_domain::AppError) -> io::Error {
     )
 }
 
-fn current_epoch_seconds() -> io::Result<u64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .map_err(|_| io::Error::other("system time is before unix epoch"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use edge_application::{checksum_snapshot, parse_mvp_config, AccessLogEvent, RecentErrorEvent};
     use edge_core::{snapshot_http::handle_snapshot_http_proxy_connection, HttpLimits};
-    use edge_domain::{CertificateRef, CommandAck, ConfigRevision, ConfigRevisionId, CoreCommand};
+    use edge_domain::{
+        CertificateRef, CommandAck, ConfigRevision, ConfigRevisionId, CoreCommand,
+        OperationalRuntimeFacts,
+    };
     use edge_ports::{
         AcmeClient, AcmeOrderRequest, AcmeOrderResult, CertificateMaterial,
         CertificateMaterialValidator, CertificateStore, ConfigRevisionRepository, LogSink,
-        RevisionRecord, StoredCertificate, StructuredLogEvent, ValidatedCertificateMaterial,
+        RevisionRecord, RuntimeResourceStatusPublishOutcome, RuntimeResourceStatusPublisher,
+        StoredCertificate, StructuredLogEvent, ValidatedCertificateMaterial,
     };
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener, TcpStream};
@@ -2134,6 +1616,18 @@ mod tests {
 
         handle.join().unwrap().unwrap();
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn admin_request_completeness_rejects_ambiguous_content_length() {
+        let ambiguous =
+            b"POST /api/v1/login HTTP/1.1\r\ncontent-length: 1\r\ncontent-length: 2\r\n\r\n{}";
+
+        assert!(!request_is_complete(ambiguous));
+        assert_eq!(
+            request_completeness(ambiguous).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     fn read_test_http_response(client: &mut TcpStream) -> Result<String, (String, io::Error)> {
@@ -3383,7 +2877,7 @@ mod tests {
         let apply = request_once_with_state(state.clone(), &apply_request);
         assert!(apply.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(apply.contains("\"revision_id\":\"file-current-config-apply\""));
-        assert!(apply.contains("\"commands_sent\":2"));
+        assert!(apply.contains("\"commands_sent\":1"));
         let current = revisions.current().unwrap().unwrap();
         assert_eq!(current.revision.id.as_str(), "file-current-config-apply");
 
@@ -3543,7 +3037,7 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.contains("\"revision_id\":\"file-current-proxy-host-app\""));
-        assert!(response.contains("\"commands_sent\":2"));
+        assert!(response.contains("\"commands_sent\":1"));
         let current = revisions.current().unwrap().unwrap();
         assert_eq!(current.revision.id.as_str(), "file-current-proxy-host-app");
         assert!(current
@@ -3704,7 +3198,7 @@ mod tests {
         assert!(update.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(update
             .contains("\"revision_id\":\"file-current-proxy-host-app-update-proxy-host-app\""));
-        assert!(update.contains("\"commands_sent\":2"));
+        assert!(update.contains("\"commands_sent\":1"));
         let current = revisions.current().unwrap().unwrap();
         assert_eq!(
             current.revision.id.as_str(),
@@ -3773,7 +3267,7 @@ mod tests {
 
         assert!(rollback.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(rollback.contains("\"revision_id\":\"file-current\""));
-        assert!(rollback.contains("\"commands_sent\":2"));
+        assert!(rollback.contains("\"commands_sent\":1"));
         let current = revisions.current().unwrap().unwrap();
         assert_eq!(current.revision.id.as_str(), "file-current");
         assert!(!current

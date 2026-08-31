@@ -341,20 +341,22 @@ existing unified mio runtime only as the outer execution adapter.
 
 ## Fitness Checks
 
-`scripts/check_architecture.sh` enforces the current minimum boundary rules:
+Run the executable boundary gate from the repository root:
 
-- domain does not import adapter/runtime/framework APIs
-- application does not use concrete file/network/framework APIs
-- env access stays at the edge-proxy bootstrap boundary
-- core/domain/application do not depend on Admin Web UI
-- Admin API does not access Core runtime internals
-- Admin Web UI does not write config files directly
-- metric HTTP/socket/encoder implementations remain outside domain, application,
-  and core hot-path policy
-- post-bootstrap crates do not access process environment
+```bash
+python3 tools/release/check_architecture.py --workspace .
+python3 tools/release/check_source_indexes.py --workspace .
+```
 
-Release source scans and this architecture gate enforce the unified runtime
-boundaries together.
+It rejects runtime dependencies that would invert the declared layers, including
+network/TLS/runtime dependencies in domain, ports, or application; TLS/runtime
+dependencies in Core; and Core/adapter access from Admin API. It also rejects
+process-environment reads outside `apps/edge-proxy/src/bootstrap.rs` and product
+`unsafe` blocks that lack a nearby `SAFETY:` invariant. The build workflow runs
+this gate before every release binary build. The adjacent source-index gate
+rejects missing, stale, or duplicate direct Rust paths in checked-in `source.md`
+indexes. Broader architecture statements above remain design contracts covered
+by the relevant Rust and API tests.
 
 ## Phase 011 Memory Manifest Boundary
 

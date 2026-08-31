@@ -160,7 +160,9 @@ the functional gate:
 node tests/performance/bin/run.mjs smoke
 ```
 
-The runner recreates only the performance services, generates ignored test PKI, and publishes raw
+Run a real profile only from a clean Git worktree; the runner rejects source changes before it
+creates artifacts, prepares PKI, builds images, or changes Compose services. The runner recreates
+only the performance services, generates ignored test PKI, and publishes raw
 results under `artifacts/performance/<run-id>/`. It exposes only the read-only Node dashboard at
 `127.0.0.1:3000`; Edge Admin has no host port and Docker socket access is never mounted into a
 container. See [`docs/testing.md`](docs/testing.md#release-performance-test-environment) before

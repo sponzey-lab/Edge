@@ -10,7 +10,7 @@ const repositoryRoot = path.resolve(
   "../../..",
 );
 
-function composeConfig() {
+function composeConfig(environment = {}) {
   const output = execFileSync(
     "docker",
     [
@@ -26,6 +26,11 @@ function composeConfig() {
     {
       cwd: repositoryRoot,
       encoding: "utf8",
+      env: {
+        ...process.env,
+        SPONZEY_PERFORMANCE_DASHBOARD_PORT: "3000",
+        ...environment,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
@@ -78,6 +83,16 @@ test("performance Compose declares the four-service measurement boundary", () =>
   assert.equal(config.services["node-upstream"].ports.length, 1);
   assert.equal(dashboardPort.target, 3000);
   assert.equal(dashboardPort.published, "3000");
+  assert.equal(dashboardPort.protocol, "tcp");
+  assert.equal(dashboardPort.host_ip, "127.0.0.1");
+});
+
+test("performance Compose permits an explicit loopback dashboard host-port override", () => {
+  const config = composeConfig({ SPONZEY_PERFORMANCE_DASHBOARD_PORT: "3100" });
+  const [dashboardPort] = config.services["node-upstream"].ports;
+
+  assert.equal(dashboardPort.target, 3000);
+  assert.equal(dashboardPort.published, "3100");
   assert.equal(dashboardPort.protocol, "tcp");
   assert.equal(dashboardPort.host_ip, "127.0.0.1");
 });

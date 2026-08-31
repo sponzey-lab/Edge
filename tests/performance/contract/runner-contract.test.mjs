@@ -24,6 +24,32 @@ test("performance runner dry-run neither starts Docker nor publishes artifacts",
   assert.equal(result.states.at(-1), "Published");
 });
 
+test("performance runner accepts only a clean source status for real profiles", async () => {
+  const { requireCleanSourceStatus } = await import(runner);
+  assert.doesNotThrow(() => requireCleanSourceStatus(""));
+  assert.throws(
+    () => requireCleanSourceStatus(" M crates/edge-core/src/lib.rs\n"),
+    /clean working tree/,
+  );
+  assert.throws(() => requireCleanSourceStatus("?? local-fixture.txt\n"), /clean working tree/);
+});
+
+test("real profiles verify source identity before artifact and Docker side effects", () => {
+  const source = readFileSync(runner, "utf8");
+  const guard = source.indexOf("const source = sourceIdentity();");
+  const artifact = source.indexOf("const id = runId();");
+  const docker = source.indexOf('command("docker", [...compose, "rm"');
+  assert.ok(guard >= 0);
+  assert.ok(guard < artifact);
+  assert.ok(artifact < docker);
+});
+
+test("performance documentation requires a clean source identity", () => {
+  for (const document of ["README.md", "docs/testing.md", "docs/release-gate.md"]) {
+    assert.match(readFileSync(path.join(root, document), "utf8"), /clean Git worktree/);
+  }
+});
+
 test("performance runner uses the host UID for the k6 result-writer command", async () => {
   const { buildLoadGeneratorCommand } = await import(runner);
   const command = buildLoadGeneratorCommand({

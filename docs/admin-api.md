@@ -29,9 +29,9 @@ hash exists. `POST /api/v1/proxy-hosts` has a framework-free HTTP contract
 handler that verifies session/CSRF, parses the JSON DTO, validates the next
 config, and calls `ConfigLifecycle::apply_with_core`. The bin-bound TCP listener
 now binds this create endpoint to file revisions and the `run_snapshot_http_proxy_mio`
-runtime command channel. The running data plane applies `ApplyConfigSnapshot`
-before returning accepted acknowledgement, and the lifecycle commits `current`
-only after that acknowledgement. `POST /api/v1/config/rollback` is also bound
+runtime command channel. A hot apply consists of one atomic `ApplyConfigSnapshot`
+acknowledgement; the lifecycle commits `current` only after that acknowledgement.
+`POST /api/v1/config/rollback` is also bound
 through the same lifecycle/runtime command boundary. `GET /api/v1/proxy-hosts`,
 `GET /api/v1/proxy-hosts/{id}`, `PATCH /api/v1/proxy-hosts/{id}`, and
 `DELETE /api/v1/proxy-hosts/{id}` now read/update/remove generated route/service

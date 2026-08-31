@@ -1,13 +1,24 @@
 # Current Implementation State
 
-기준일: 2026-07-21
+기준일: 2026-08-30
 
-2026-07-21 기준 `scripts/` 아래의 로컬 테스트 helper, smoke runner, release evidence
-collector, memory profile wrapper는 삭제되었다. 이 문서에 남아 있는 script 이름은 과거
-Phase evidence를 설명하는 추적 정보이며 현재 실행 가능한 명령으로 해석하지 않는다. 현재
-코드 검증의 기본 출발점은 `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo test --workspace -- --test-threads=1`, 실제 `edge-proxy` 실행과 필요한 수동/통합
-검증이다.
+`scripts/` 아래의 로컬 테스트 helper, smoke runner, release evidence collector, memory
+profile wrapper는 삭제되었다. 이 문서에 남아 있는 해당 script 이름은 과거 Phase evidence를
+설명하는 추적 정보이며 현재 실행 가능한 명령으로 해석하지 않는다. 현재 코드 검증의 기본
+출발점은 `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace -- --test-threads=1`,
+`python3 tools/release/check_architecture.py --workspace .`, 실제 `edge-proxy` 실행과 필요한
+`python3 tools/release/check_source_indexes.py --workspace .`, 실제 `edge-proxy` 실행과 필요한
+수동/통합 검증이다. Build Binaries workflow의 read-only `Source quality` job은 fmt, clippy,
+workspace test, architecture/source-index fitness와 pinned `cargo-audit`의 `cargo audit`을 모두
+통과시킨 뒤에만 artifact build와 prerelease candidate publish를 시작한다. audit tool install
+또는 advisory DB 접근 실패도 job 실패로 처리한다. A SemVer tag remains a candidate until
+tracked clean-host evidence validates through `promote-release.yml`; this does not reopen certificate
+automation.
+
+The current tree carries `v0.0.4 candidate metadata`, but has no tag or published artifact. Its
+source-level upgrade/rollback contracts are candidate preparation only and do not replace the
+required same-identity clean-host matrix.
 
 ## Performance Test Environment
 

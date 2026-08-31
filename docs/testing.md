@@ -69,6 +69,11 @@ Run the 30-second functional gate before collecting a performance profile:
 node tests/performance/bin/run.mjs smoke
 ```
 
+Run a real profile only from a clean Git worktree. The runner rejects tracked or
+untracked source changes before it creates an artifact, prepares test PKI,
+builds the image, or changes the performance Compose services; `--dry-run`
+remains side-effect free.
+
 The host-side runner performs this lifecycle: it safely recreates the ignored test PKI runtime,
 builds and waits for the release image, runs k6, samples Edge CPU and memory through the host Docker
 CLI, validates the k6 gate, and atomically publishes the result. It does not mount a Docker socket
@@ -116,6 +121,46 @@ GitHub Actions runs the Compose/Node/profile contracts and this smoke profile fo
 pushes to `main` or `develop`. `baseline`, `stress`, and `soak` are manual `workflow_dispatch`
 choices only. CI retains only allow-listed non-secret summary, state, metadata, and resource sample
 files for 14 days; generated test PKI and its private key are never uploaded.
+
+### Persistent Remote Linux Reference Host
+
+An operator may keep the selected external performance host in the ignored root `.env` file. It is
+host-selection metadata only: the runner does not read this file, copy source to the host, or start a
+remote profile automatically. Keep the file owner-only (`0600`) and use SSH key authentication rather
+than a stored password:
+
+```dotenv
+SPONZEY_PERFORMANCE_HOST=192.0.2.10
+SPONZEY_PERFORMANCE_SSH_PORT=22
+SPONZEY_PERFORMANCE_SSH_USER=operator
+SPONZEY_PERFORMANCE_SSH_AUTH=agent
+```
+
+Before a remote profile, explicitly check out the measured clean source revision on that Linux host,
+then run the same profile command from that checkout. Do not record passwords, private-key material,
+or a remote checkout path in Git. The resulting `metadata.json` must be retained with the measured
+host identity; a remote host inventory alone is not performance evidence.
+
+The read-only Node dashboard remains internal to the Compose network on port `3000`; its loopback
+published host port defaults to `3000`. If that host port is occupied, set a different local value only
+for that performance invocation, for example `SPONZEY_PERFORMANCE_DASHBOARD_PORT=3100`. This does not
+change the Edge upstream target, the dashboard's container port, or its loopback-only exposure.
+
+## Manual HTTP framing mutation fuzz
+
+The source-quality CI job runs a bounded 1,000-case deterministic mutation smoke.
+For an extended local parser/framer and connection-state mutation run on the
+stable Rust toolchain, use the test-only example:
+
+```bash
+cargo run -p edge-core --example http_framing_mutation_fuzz -- 1000000
+```
+
+The optional case count is bounded from 1 through 1,000,000 (the default is
+100,000). The runner performs no network I/O, writes no corpus or artifact, and
+prints only the completed case count. It is not release evidence and does not
+replace the Linux host, soak, or coverage-guided fuzzing evidence required for a
+release candidate.
 
 ## Configuration Contract Check
 

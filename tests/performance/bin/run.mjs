@@ -81,13 +81,30 @@ function runId() {
   return `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
 }
 
-function metadata(profile, id) {
+/**
+ * Rejects source that cannot be represented by the immutable Git identity
+ * recorded in a published performance artifact.
+ */
+export function requireCleanSourceStatus(status) {
+  if (status.trim() !== "") {
+    throw new Error("performance run requires a clean working tree");
+  }
+}
+
+function sourceIdentity() {
+  requireCleanSourceStatus(command("git", ["status", "--porcelain=v1", "--untracked-files=normal"]));
+  return {
+    source_commit: command("git", ["rev-parse", "HEAD"]).trim(),
+    source_tree: command("git", ["rev-parse", "HEAD^{tree}"]).trim(),
+  };
+}
+
+function metadata(profile, id, source) {
   return {
     run_id: id,
     profile,
     started_at: new Date().toISOString(),
-    source_commit: command("git", ["rev-parse", "HEAD"]).trim(),
-    source_tree: command("git", ["rev-parse", "HEAD^{tree}"]).trim(),
+    ...source,
     host_platform: process.platform,
     host_arch: process.arch,
     edge_image_id: command("docker", ["image", "inspect", "--format", "{{.Id}}", "sponzey-edge-test-edge-perf"]).trim(),
@@ -154,6 +171,7 @@ export async function runProfile(profile, { dryRun = false, artifactRoot = path.
   const plan = buildRunPlan(profile);
   if (dryRun) return { ...plan, dry_run: true };
 
+  const source = sourceIdentity();
   const id = runId();
   const finalDir = path.join(artifactRoot, id);
   const tempDir = `${finalDir}.partial`;
@@ -170,7 +188,7 @@ export async function runProfile(profile, { dryRun = false, artifactRoot = path.
     command(process.execPath, ["tests/performance/bin/prepare-pki-runtime.mjs", "--output", runtime]);
     command("docker", [...compose, "build", "edge-perf"]);
     command("docker", [...compose, "up", "-d", "--wait", "edge-perf", "node-upstream"]);
-    writeFileSync(path.join(tempDir, "metadata.json"), `${JSON.stringify(metadata(profile, id), null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(path.join(tempDir, "metadata.json"), `${JSON.stringify(metadata(profile, id, source), null, 2)}\n`, { mode: 0o600 });
     history = transition(history, RunState.Warmup);
     history = transition(history, RunState.Running);
     const samples = [];
