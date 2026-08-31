@@ -26,6 +26,50 @@ function distribution(values) {
   return { min: Math.min(...values), median: median(values), max: Math.max(...values) };
 }
 
+export const C8_POLICY = Object.freeze({
+  minimum_rps_ratio: 0.95,
+  maximum_p95_ratio: 1.1,
+  maximum_p99_ratio: 1.1,
+});
+
+function distributionMedian(summary, path) {
+  const value = path.reduce((current, key) => current?.[key], summary);
+  if (!value || !Number.isFinite(value.median)) {
+    throw new Error(`missing performance distribution: ${path.join(".")}`);
+  }
+  return value.median;
+}
+
+/**
+ * Applies the fixed C8 relative performance policy to already-audited baseline summaries.
+ * The caller owns host/source identity verification; this pure rule never invents a baseline.
+ */
+export function evaluateC8Gate(reference, candidate, policy = C8_POLICY) {
+  const referenceRps = distributionMedian(reference, ["rps"]);
+  const candidateRps = distributionMedian(candidate, ["rps"]);
+  const referenceP95 = distributionMedian(reference, ["latency_ms", "p95"]);
+  const candidateP95 = distributionMedian(candidate, ["latency_ms", "p95"]);
+  const referenceP99 = distributionMedian(reference, ["latency_ms", "p99"]);
+  const candidateP99 = distributionMedian(candidate, ["latency_ms", "p99"]);
+  const referenceErrorRate = distributionMedian(reference, ["error_rate"]);
+  const candidateErrorRate = distributionMedian(candidate, ["error_rate"]);
+  if (referenceRps <= 0 || referenceP95 <= 0 || referenceP99 <= 0) {
+    throw new Error("reference performance distribution must be positive");
+  }
+  const result = {
+    rps_ratio: candidateRps / referenceRps,
+    p95_ratio: candidateP95 / referenceP95,
+    p99_ratio: candidateP99 / referenceP99,
+    error_rate_delta: candidateErrorRate - referenceErrorRate,
+  };
+  const failures = [];
+  if (result.rps_ratio < policy.minimum_rps_ratio) failures.push("C8_RPS_REGRESSION");
+  if (result.p95_ratio > policy.maximum_p95_ratio) failures.push("C8_P95_REGRESSION");
+  if (result.p99_ratio > policy.maximum_p99_ratio) failures.push("C8_P99_REGRESSION");
+  if (result.error_rate_delta > 0) failures.push("C8_ERROR_RATE_INCREASE");
+  return { passed: failures.length === 0, ...result, failures };
+}
+
 export function summarizeK6(raw, runIndex) {
   const metrics = raw.metrics ?? {};
   const checks = number(metric(metrics, "checks").value, "checks.value");

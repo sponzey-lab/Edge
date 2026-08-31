@@ -44,6 +44,14 @@ test("real profiles verify source identity before artifact and Docker side effec
   assert.ok(artifact < docker);
 });
 
+test("real profiles capture the host identity required for C8 comparison", () => {
+  const source = readFileSync(runner, "utf8");
+  assert.match(source, /host_identity: hostIdentity\(\)/);
+  assert.match(source, /cpu_governor/);
+  assert.match(source, /docker_version/);
+  assert.match(source, /compose_version/);
+});
+
 test("performance documentation requires a clean source identity", () => {
   for (const document of ["README.md", "docs/testing.md", "docs/release-gate.md"]) {
     assert.match(readFileSync(path.join(root, document), "utf8"), /clean Git worktree/);

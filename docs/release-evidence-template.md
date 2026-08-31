@@ -153,6 +153,26 @@ path_and_symlink_rejection_result:
 The receipt must not expose archive paths, private keys, secrets, request or
 response bodies, authorization material, cookies, or full queries.
 
+## C8 Performance Evidence
+
+```text
+reference_baseline_artifact:
+candidate_baseline_artifact:
+reference_commit:
+candidate_commit:
+matching_host_identity_result:
+c8_compare_command:
+c8_compare_result:
+median_rps_ratio:
+median_p95_ratio:
+median_p99_ratio:
+median_error_rate_delta:
+```
+
+The comparator rejects incomplete, pre-host-identity, or mismatched-host artifacts.
+Its accepted limits are no more than 5% median RPS loss, no more than 10% median
+p95/p99 increase, and no median error-rate increase.
+
 ## Known Limits
 
 ```text

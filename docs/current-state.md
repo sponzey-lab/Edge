@@ -27,9 +27,11 @@ The separate `tests/performance/` Compose boundary now provides a production
 host-only CPU/memory samples, fail-closed summary/audit, and a 30-second smoke
 CI gate. Baseline (three independent warmup/measurement runs), stress, and
 30-minute soak remain manual characterization profiles. Their ignored artifacts
-are supplemental evidence only: they do not replace the canonical Phase 011
-7,200-second/platform release gate, and no regression threshold has been
-approved yet.
+do not replace the canonical Phase 011 7,200-second/platform release gate.
+For C8, new baseline artifacts must capture matching host identity and pass the
+5% median-RPS, 10% p95/p99, and no-error-increase gate described in
+[`release-gate.md`](release-gate.md#support-and-performance-evidence). Artifacts
+created before that host-identity schema remain characterization-only.
 
 이 문서는 Phase 001부터 Phase 011까지 완료된 구현의 현재 기준이다. 상세 과거 계획과 실행
 기록은 `.tasks/phase001/`부터 `.tasks/phase012/`에 보관하며, Phase 010 완료 판정은

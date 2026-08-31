@@ -95,8 +95,20 @@ Run a real profile only from a clean Git worktree. The runner rejects source
 changes before artifact, PKI, image-build, or Compose-service side effects, so
 the recorded commit/tree identity describes the measured source.
 
-Baseline, stress, and soak profiles are not release-blocking numeric thresholds
-unless a separately approved contract defines those thresholds.
+The C8 release performance contract uses audited three-run `baseline` artifacts.
+The candidate artifact must have the same captured host identity (kernel, CPU model/governor,
+Docker, and Compose versions) as the approved reference artifact. Its median RPS may not fall
+more than 5%; median p95 and p99 may not worsen more than 10%; and its median error rate may
+not increase. The comparison is fail-closed:
+
+```bash
+node tests/performance/bin/c8-compare.mjs \
+  artifacts/performance/<reference-run-id> \
+  artifacts/performance/<candidate-run-id>
+```
+
+Artifacts created before host identity was recorded are characterization-only and cannot satisfy
+this gate. Stress and soak remain separate evidence; neither relaxes C8.
 
 ## Evidence record and decision
 

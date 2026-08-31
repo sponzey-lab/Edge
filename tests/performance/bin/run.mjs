@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { compareBaseline, summarizeFiles, summarizeResources } from "./summary.mjs";
@@ -99,6 +99,24 @@ function sourceIdentity() {
   };
 }
 
+/** Captures the stable host/runtime dimensions required before C8 artifact comparison. */
+export function hostIdentity() {
+  const cpuInfo = process.platform === "linux" && existsSync("/proc/cpuinfo")
+    ? readFileSync("/proc/cpuinfo", "utf8").match(/^model name\s*:\s*(.+)$/m)?.[1]?.trim() ?? "unknown"
+    : "not-linux";
+  const governorDirectory = "/sys/devices/system/cpu/cpu0/cpufreq";
+  const governor = process.platform === "linux" && existsSync(`${governorDirectory}/scaling_governor`)
+    ? readFileSync(`${governorDirectory}/scaling_governor`, "utf8").trim()
+    : "unavailable";
+  return {
+    kernel: command("uname", ["-srmo"]).trim(),
+    cpu_model: cpuInfo,
+    cpu_governor: governor,
+    docker_version: command("docker", ["version", "--format", "{{.Server.Version}}"]).trim(),
+    compose_version: command("docker", ["compose", "version", "--short"]).trim(),
+  };
+}
+
 function metadata(profile, id, source) {
   return {
     run_id: id,
@@ -107,6 +125,7 @@ function metadata(profile, id, source) {
     ...source,
     host_platform: process.platform,
     host_arch: process.arch,
+    host_identity: hostIdentity(),
     edge_image_id: command("docker", ["image", "inspect", "--format", "{{.Id}}", "sponzey-edge-test-edge-perf"]).trim(),
   };
 }

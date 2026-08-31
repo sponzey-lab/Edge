@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compareBaseline, summarizeK6, summarizeResources } from "../bin/summary.mjs";
+import { compareBaseline, evaluateC8Gate, summarizeK6, summarizeResources } from "../bin/summary.mjs";
 
 function k6Summary({ checks = 1, failed = 0, rate = 100, p50 = 2, p95 = 5, p99 = 9 } = {}) {
   return { metrics: {
@@ -23,6 +23,44 @@ test("baseline comparison requires three successful runs and reports distributio
   assert.deepEqual(compareBaseline(runs).rps, { min: 90, median: 100, max: 110 });
   assert.deepEqual(compareBaseline(runs).latency_ms.p95, { min: 5, median: 6, max: 7 });
   assert.throws(() => compareBaseline(runs.slice(0, 2)), /exactly three/);
+});
+
+test("C8 gate fails closed for RPS, tail-latency, and error-rate regressions", () => {
+  const reference = {
+    rps: { min: 90, median: 100, max: 110 },
+    latency_ms: {
+      p50: { min: 1, median: 2, max: 3 },
+      p95: { min: 4, median: 5, max: 6 },
+      p99: { min: 7, median: 8, max: 9 },
+    },
+    error_rate: { min: 0, median: 0, max: 0 },
+  };
+  const passing = structuredClone(reference);
+  assert.deepEqual(evaluateC8Gate(reference, passing), {
+    passed: true,
+    rps_ratio: 1,
+    p95_ratio: 1,
+    p99_ratio: 1,
+    error_rate_delta: 0,
+    failures: [],
+  });
+
+  const regressed = structuredClone(reference);
+  regressed.rps.median = 94;
+  regressed.latency_ms.p95.median = 5.6;
+  regressed.latency_ms.p99.median = 8.9;
+  regressed.error_rate.median = 0.001;
+  const result = evaluateC8Gate(reference, regressed);
+  assert.ok(Math.abs(result.p95_ratio - 1.12) < 1e-12);
+  assert.deepEqual({ ...result, p95_ratio: 0 }, {
+    passed: false,
+    rps_ratio: 0.94,
+    p95_ratio: 0,
+    p99_ratio: 1.1125,
+    error_rate_delta: 0.001,
+    failures: ["C8_RPS_REGRESSION", "C8_P95_REGRESSION", "C8_P99_REGRESSION", "C8_ERROR_RATE_INCREASE"],
+  });
+  assert.throws(() => evaluateC8Gate(reference, { rps: { median: 100 } }), /missing performance distribution/);
 });
 
 test("resource trend reports distributions without inventing an approval threshold", () => {
