@@ -57,11 +57,14 @@ claim. Record and cross-check all of the following against that candidate:
 - GitHub Release URL and tag-to-commit identity
 - Linux `amd64` and `arm64` archive checksums and SPDX SBOM checksum
 - GHCR repository, immutable multi-architecture manifest digest, and OCI
-  revision label
+  revision/version labels
 - an anonymous pull of the exact digest before the prerelease is created
 
 A mutable image tag without its matching immutable digest is insufficient. The
 tag, archives, SBOM, OCI label, and digest must all identify one release.
+The publishing workflow inspects the anonymously pulled image and fails before
+release assembly unless its revision equals the tagged commit and its version
+equals the SemVer tag. Independent clean-host evidence must repeat that check.
 
 ## Runtime release matrix
 

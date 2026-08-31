@@ -21,6 +21,9 @@ manifest lacks the required OCI revision and version labels. It must not be reta
 or used as clean-host evidence. The current tree carries `v0.0.5 candidate metadata`, but has
 no tag or published artifact. Its source-level upgrade/rollback contracts are candidate
 preparation only and do not replace the required same-identity clean-host matrix.
+Before a candidate prerelease is assembled, the tag workflow anonymously pulls its exact GHCR
+digest and fails closed unless the inspected OCI revision and version labels equal the tagged
+commit and SemVer tag.
 
 ## Performance Test Environment
 

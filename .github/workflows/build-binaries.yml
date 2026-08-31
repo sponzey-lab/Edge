@@ -195,7 +195,18 @@ jobs:
         shell: bash
         run: |
           docker logout ghcr.io || true
-          docker pull ghcr.io/sponzey-lab/sponzey-edge:${GITHUB_REF_NAME}@${{ steps.image.outputs.digest }}
+          image="ghcr.io/sponzey-lab/sponzey-edge:${GITHUB_REF_NAME}@${{ steps.image.outputs.digest }}"
+          docker pull "${image}"
+
+      - name: Verify published GHCR image identity labels
+        if: steps.release_tag.outputs.publish == 'true'
+        shell: bash
+        run: |
+          image="ghcr.io/sponzey-lab/sponzey-edge:${GITHUB_REF_NAME}@${{ steps.image.outputs.digest }}"
+          revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${image}")"
+          version="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${image}")"
+          test "${revision}" = "${GITHUB_SHA}"
+          test "${version}" = "${GITHUB_REF_NAME}"
 
       - name: Assemble release assets
         if: steps.release_tag.outputs.publish == 'true'

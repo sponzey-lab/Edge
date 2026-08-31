@@ -81,11 +81,24 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertIn("Verify published GHCR image is publicly pullable", self.workflow)
         self.assertIn("docker logout ghcr.io || true", self.workflow)
         self.assertIn(
-            "docker pull ghcr.io/sponzey-lab/sponzey-edge:${GITHUB_REF_NAME}@${{ steps.image.outputs.digest }}",
+            'image="ghcr.io/sponzey-lab/sponzey-edge:${GITHUB_REF_NAME}@${{ steps.image.outputs.digest }}"',
             self.workflow,
         )
+        self.assertIn('docker pull "${image}"', self.workflow)
         self.assertLess(
             self.workflow.index("Verify published GHCR image is publicly pullable"),
+            self.workflow.index("Assemble release assets"),
+        )
+
+    def test_tag_release_fails_closed_when_published_image_identity_is_wrong(self) -> None:
+        self.assertIn("Verify published GHCR image identity labels", self.workflow)
+        self.assertIn("docker image inspect --format", self.workflow)
+        self.assertIn("org.opencontainers.image.revision", self.workflow)
+        self.assertIn("org.opencontainers.image.version", self.workflow)
+        self.assertIn('"${revision}" = "${GITHUB_SHA}"', self.workflow)
+        self.assertIn('"${version}" = "${GITHUB_REF_NAME}"', self.workflow)
+        self.assertLess(
+            self.workflow.index("Verify published GHCR image identity labels"),
             self.workflow.index("Assemble release assets"),
         )
 
