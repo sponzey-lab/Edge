@@ -2698,13 +2698,14 @@ full-profile 실행 경계를 고정한다. typed registry는 임의 command가 
 10개 job만 허용한다. steady job 하나가 HTTP/HTTPS/required-mTLS 세 scenario를 제공하므로 총
 12개 scenario를 정확히 한 번 덮는다. registry test는 누락, 중복과 unknown scenario를 거부한다.
 
-`scripts/run_full_memory_profile.sh <new-output-root>`는 source identity를 시작 시 한 번 계산하고
-`edge-full-profile-runner`에 명시적으로 전달한다. runner는 각 fixed smoke를 별도 process로 실행해
-exit 0을 확인한 뒤, 고정 상대 경로의 physical report/digest, SHA-256과 report build identity를
-다시 검사한다. 한 job이라도 실패, stale, missing, symlink 또는 tampered이면 즉시 terminal
-failure이며 inventory/readiness를 게시하지 않는다. 모든 job 검증 후에만 ordered 12-entry
-inventory와 `ready=true` readiness report/digest를 atomic publish한다. wrapper는 종료 전 source
-identity가 바뀌지 않았는지 다시 검사한다.
+`edge-full-profile-runner plan`은 registry 문자열만 출력하지 않는다. source-controlled 10개 job
+entrypoint가 모두 physical executable regular file인지 먼저 검사하며, 하나라도 missing, symlink
+또는 non-executable이면 plan 단계에서 terminal failure다. 현재 source tree에는 이 10 scenario
+entrypoint가 아직 없으므로 full-profile evidence는 실행 불가이며, `ready=true` 또는 inventory가
+게시되지 않는다. 각 fixed smoke와 `scripts/run_full_memory_profile.sh`를 복구한 뒤에만 runner가
+source identity를 시작 시 한 번 계산하고 각 job의 exit 0, physical report/digest, SHA-256 및
+report build identity를 다시 검사할 수 있다. 모든 job 검증 후에만 ordered 12-entry inventory와
+`ready=true` readiness report/digest를 atomic publish한다.
 
 runner 통과는 현재 host의 full macOS 또는 Linux scenario profile 증거다. 한 platform 결과를 다른
 platform 결과로 해석하지 않으며 2-hour soak와 deep diagnostic도 별도 승인 조건이다.

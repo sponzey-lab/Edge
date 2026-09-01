@@ -612,6 +612,11 @@ digests, the bound release report and digest, and `phase011-memory.log`. Success
 historical evidence and cannot be relabeled as current. The marker is platform-specific and does
 not remove the separate Linux x86_64 or deep-diagnostic requirements.
 
+The current full-profile registry is fail-closed before execution: its ten scenario shell
+entrypoints are not present in the source tree, so `edge-full-profile-runner plan` terminates before
+printing a runnable plan and no current-source full-profile evidence exists. Restoring those fixed
+entrypoints is separate from the final soak/release wrappers above.
+
 ## Phase 011 macOS Deep Diagnostic
 
 Task 068 established a test-only macOS diagnostic path without modifying the shipped binary or host

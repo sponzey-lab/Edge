@@ -1,7 +1,11 @@
 use edge_memory_harness::full_profile_readiness::{evaluate_full_profile, FULL_PROFILE_SCENARIOS};
+use std::fs;
+use std::path::Path;
+
 use edge_memory_harness::full_profile_runner::{
-    build_verified_input, validate_runner_registry, FullProfileRunnerEvent, FullProfileRunnerState,
-    RunnerJobOutcome, RunnerLifecycle, FULL_PROFILE_JOBS,
+    build_verified_input, validate_runner_entrypoints, validate_runner_registry,
+    FullProfileRunnerEvent, FullProfileRunnerState, RunnerJobOutcome, RunnerLifecycle,
+    FULL_PROFILE_JOBS,
 };
 
 const BUILD: &str =
@@ -23,6 +27,22 @@ fn fixed_ten_jobs_cover_exact_twelve_scenarios() {
         .collect::<Vec<_>>();
     expected.sort_unstable();
     assert_eq!(covered, expected);
+}
+
+#[test]
+fn physical_executable_entrypoints_are_required_before_a_profile_is_planned() {
+    let root = temporary_root("entrypoint-preflight");
+    assert!(validate_runner_entrypoints(&root).is_err());
+
+    for job in FULL_PROFILE_JOBS {
+        let path = root.join(job.script_path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        set_executable(&path);
+    }
+
+    assert!(validate_runner_entrypoints(&root).is_ok());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -108,3 +128,23 @@ fn outcomes() -> Vec<RunnerJobOutcome> {
         })
         .collect()
 }
+
+fn temporary_root(name: &str) -> std::path::PathBuf {
+    let root =
+        std::env::temp_dir().join(format!("edge-memory-harness-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    root
+}
+
+#[cfg(unix)]
+fn set_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+#[cfg(not(unix))]
+fn set_executable(_: &Path) {}

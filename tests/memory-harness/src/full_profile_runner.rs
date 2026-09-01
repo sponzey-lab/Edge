@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 
 use crate::full_profile_readiness::{FullProfileEntry, FullProfileInput, FULL_PROFILE_SCENARIOS};
 use crate::HarnessError;
@@ -244,6 +246,35 @@ pub fn validate_runner_registry() -> Result<(), HarnessError> {
         ));
     }
     Ok(())
+}
+
+/// Rejects a full-profile plan whose source-controlled shell entrypoints cannot be executed.
+///
+/// This is a test/release adapter preflight: it neither invokes scripts nor changes product state.
+pub fn validate_runner_entrypoints(root: &Path) -> Result<(), HarnessError> {
+    for job in FULL_PROFILE_JOBS {
+        let path = root.join(job.script_path);
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|_| HarnessError::new("full profile runner entrypoint is unavailable"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || !is_executable(&metadata) {
+            return Err(HarnessError::new(
+                "full profile runner entrypoint is not an executable regular file",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_executable(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_: &fs::Metadata) -> bool {
+    false
 }
 
 pub fn build_verified_input(

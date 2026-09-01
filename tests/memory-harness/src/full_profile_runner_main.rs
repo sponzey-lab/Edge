@@ -6,8 +6,8 @@ use std::process::Command;
 
 use edge_memory_harness::full_profile_readiness::evaluate_full_profile;
 use edge_memory_harness::full_profile_runner::{
-    build_verified_input, validate_runner_registry, FullProfileRunnerEvent, RunnerJobOutcome,
-    RunnerLifecycle, FULL_PROFILE_JOBS,
+    build_verified_input, validate_runner_entrypoints, validate_runner_registry,
+    FullProfileRunnerEvent, RunnerJobOutcome, RunnerLifecycle, FULL_PROFILE_JOBS,
 };
 use edge_memory_harness::report_io::{publish_canonical_bytes, publish_digest, sha256_hex};
 use edge_memory_harness::HarnessError;
@@ -25,6 +25,7 @@ fn run(arguments: Vec<String>) -> Result<(), HarnessError> {
         "plan" => {
             exact_keys(&options, &[])?;
             validate_runner_registry()?;
+            validate_runner_entrypoints(Path::new("."))?;
             for job in FULL_PROFILE_JOBS {
                 println!(
                     "job={} script={} output={} report={} scenarios={}",
