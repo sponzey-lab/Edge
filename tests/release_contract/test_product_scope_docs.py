@@ -65,6 +65,20 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
         self.assertNotIn("./scripts/", archive)
         self.assertNotIn("Post-MVP Let's Encrypt Staging Fails", troubleshooting)
 
+    def test_phase011_documented_entrypoints_exist_and_target_fixed_harness_clis(self) -> None:
+        expected = {
+            "scripts/run_diagnostic_soak.sh": "edge-diagnostic-soak-runner",
+            "scripts/collect_phase011_memory_release.sh": "edge-phase011-memory-release -- collect",
+            "scripts/check_phase011_memory_release.sh": "edge-phase011-memory-release -- validate",
+        }
+
+        for relative_path, target in expected.items():
+            with self.subTest(path=relative_path):
+                script = ROOT / relative_path
+                self.assertTrue(script.is_file())
+                self.assertTrue(script.stat().st_mode & 0o111)
+                self.assertIn(target, script.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

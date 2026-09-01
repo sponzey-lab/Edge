@@ -13,7 +13,7 @@ or mutate the product runtime.
 | `test_dependency_advisories.py` | Pins RustSec-mandated lockfile minima that block release quality gates. | Reads Cargo.lock only. |
 | `test_document_links.py` | Verifies current README and operator-document local Markdown links resolve within the repository. | Reads a fixed current-document set only; does not validate historical archives, external links, or mutate product data. |
 | `test_manual_fuzz.py` | Verifies the bounded stable-toolchain manual HTTP framing mutation runner and its documentation contract. | Reads test-tool and documentation source only. |
-| `test_product_scope_docs.py` | Verifies supported product scope and deferred certificate automation statements. | Reads product documents only. |
+| `test_product_scope_docs.py` | Verifies supported product scope, deferred certificate automation statements, and documented Phase 011 evidence entrypoints. | Reads product documents and test/release shell source only. |
 | `test_release_assembly.py` | Verifies deterministic release-asset assembly contracts. | Uses isolated temporary artifact fixtures. |
 | `test_release_manifest.py` | Verifies release-manifest validation contracts. | Uses isolated temporary artifact fixtures. |
 | `test_release_metadata.py` | Verifies tag, repository, and package metadata validation. | Reads repository metadata only. |

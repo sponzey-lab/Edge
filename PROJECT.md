@@ -2756,12 +2756,22 @@ WebSocket count, ceiling과 tolerance option은 없다. attached process와 conf
 번 고정하고, 모든 window 통과 후 Task 060 evaluator가 승인한 canonical report/digest만 atomic
 publish한다.
 
-`scripts/run_diagnostic_soak.sh NEW_OUTPUT_ROOT`는 하나의 bounded dual HTTP/WebSocket test
-upstream과 하나의 release proxy를 시작해 fixed runner를 실행하고 별도 `edge-diagnostic-soak
-validate` process로 결과를 재검증한다. output root는 실행 전에 없어야 하고 source identity 변경,
-child failure와 민감 field scan 실패는 success를 게시하지 않는다. 이 task는 실행기를 구현한
-범위를 기록한다. 이후 실제 실행의 유효성은 문서의 고정 문구가 아니라 아래 최종 결합기가 현재
-source identity와 report digest를 다시 검증해 판정한다.
+`scripts/run_diagnostic_soak.sh`는 이미 격리된 release proxy/Admin process에 fixed runner를
+attach하는 thin entrypoint다. product process를 시작·재구성·종료하지 않으며, PID, address,
+revision, source/config identity와 새 output pair를 모두 명시적으로 전달해야 한다.
+
+```bash
+./scripts/run_diagnostic_soak.sh \
+  --pid <release-proxy-pid> --proxy-address <proxy-ip:port> --admin-address <admin-ip:port> \
+  --host <test-host> --expected-revision <active-revision> \
+  --build-identity <source-identity> --config-sha256 <config-digest> \
+  --output <new-soak-report.json> --digest-output <new-soak-report.sha256>
+```
+
+duration, interval, window count, churn count, WebSocket count, ceiling과 tolerance는 shell option이
+아니다. source identity 변경, child failure와 민감 field scan 실패는 success를 게시하지 않는다.
+이후 실제 실행의 유효성은 문서의 고정 문구가 아니라 아래 최종 결합기가 현재 source identity와
+report digest를 다시 검증해 판정한다.
 
 ## 30. Phase 011 최종 메모리 릴리스 결합
 
@@ -2782,14 +2792,25 @@ source-controlled이며 환경 변수나 실행 인자로 완화할 수 없다. 
 phase 011 quantitative memory and resource safety passed
 ```
 
-`scripts/collect_phase011_memory_release.sh`는 명시적으로 지정된 full-profile root와 soak
-report/digest를 새 output root에 정확히 9개 파일로 복사한다. 독립
-`scripts/check_phase011_memory_release.sh`는 unknown path와 symlink를 거부하고 세 입력 digest를
-다시 계산하며 결합 report를 원본에서 재생성해 byte-for-byte 비교한다. stale source, 다른
-platform/architecture, non-ready 또는 tampered report, 짧은 soak, marker 누락, raw PID, 임시 경로,
-credential 관련 field는 모두 실패다. `.tasks`, `artifacts`, 모든 `target`과 `node_modules`
-디렉터리는 source identity에서 제외되어 계획 문서와 생성 산출물이 증거 대상을 순환 변경하지
-않는다.
+`scripts/collect_phase011_memory_release.sh`와 독립
+`scripts/check_phase011_memory_release.sh`는 각각 명시된 regular file만 받는 Rust collector와
+validator를 호출한다.
+
+```bash
+./scripts/collect_phase011_memory_release.sh \
+  --build-identity <source-identity> --platform <platform> --architecture <architecture> \
+  --inventory <inventory-v1.json> --inventory-digest <inventory-v1.sha256> \
+  --readiness <readiness-v1.json> --readiness-digest <readiness-v1.sha256> \
+  --soak-report <soak-report.json> --soak-digest <soak-report.sha256> \
+  --output <new-release-report.json> --digest-output <new-release-report.sha256>
+./scripts/check_phase011_memory_release.sh \
+  --build-identity <source-identity> --report <release-report.json> --digest <release-report.sha256>
+```
+
+unknown path와 symlink, stale source, 다른 platform/architecture, non-ready 또는 tampered report,
+짧은 soak, marker 누락, raw PID, 임시 경로, credential 관련 field는 모두 실패다. `.tasks`,
+`artifacts`, 모든 `target`과 `node_modules` 디렉터리는 source identity에서 제외되어 계획 문서와
+생성 산출물이 증거 대상을 순환 변경하지 않는다.
 
 이 마커는 해당 platform/architecture의 정량 profile과 soak가 current source에서 통과했다는
 뜻이다. Linux x86_64 지원 증적이나 platform deep diagnostic을 자동으로 대신하지 않으며, 두

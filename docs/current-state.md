@@ -573,10 +573,20 @@ release proxy completes all 120 wall-clock windows and the final canonical repor
 
 Task 062 adds the fixed wall-clock orchestration and executable composition. Its CLI accepts only
 the attached process/proxy/Admin/identity/output boundary; duration, interval, counts, ceiling, and
-plateau are not runtime options. `scripts/run_diagnostic_soak.sh NEW_OUTPUT_ROOT` starts one bounded
-dual HTTP/WebSocket upstream and one release proxy, executes all deadlines, then invokes a separate
-canonical validator. A completed run remains valid only while its recorded source identity matches
-the source evaluated by the final binding below.
+plateau are not runtime options. The shell entrypoint is intentionally thin: it attaches the fixed
+Rust runner to an already isolated release proxy/Admin process and does not create, reconfigure, or
+stop product processes itself. Provide every identity and output explicitly:
+
+```bash
+./scripts/run_diagnostic_soak.sh \
+  --pid <release-proxy-pid> --proxy-address <proxy-ip:port> --admin-address <admin-ip:port> \
+  --host <test-host> --expected-revision <active-revision> \
+  --build-identity <source-identity> --config-sha256 <config-digest> \
+  --output <new-soak-report.json> --digest-output <new-soak-report.sha256>
+```
+
+A completed run remains valid only while its recorded source identity matches the source evaluated
+by the final binding below.
 
 ## Phase 011 Final Memory Release Binding
 
@@ -587,8 +597,13 @@ architecture, report digests, correctness, cleanup, RSS ceiling, and plateau mus
 
 ```bash
 ./scripts/collect_phase011_memory_release.sh \
-  <full-profile-root> <soak-report.json> <soak-report.sha256> <new-output-root>
-./scripts/check_phase011_memory_release.sh <output-root>
+  --build-identity <source-identity> --platform <platform> --architecture <architecture> \
+  --inventory <inventory-v1.json> --inventory-digest <inventory-v1.sha256> \
+  --readiness <readiness-v1.json> --readiness-digest <readiness-v1.sha256> \
+  --soak-report <soak-report.json> --soak-digest <soak-report.sha256> \
+  --output <new-release-report.json> --digest-output <new-release-report.sha256>
+./scripts/check_phase011_memory_release.sh \
+  --build-identity <source-identity> --report <release-report.json> --digest <release-report.sha256>
 ```
 
 The output root has exactly nine physical files: copied inventory/readiness/soak reports and their
