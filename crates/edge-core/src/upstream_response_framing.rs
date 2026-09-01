@@ -45,6 +45,8 @@ pub struct HttpResponseFraming {
     max_line_bytes: usize,
     body_expectation: ResponseBodyExpectation,
     status_code: Option<u16>,
+    connection_close: bool,
+    close_delimited: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +92,8 @@ impl HttpResponseFraming {
             max_line_bytes,
             body_expectation,
             status_code: None,
+            connection_close: false,
+            close_delimited: false,
         }
     }
 
@@ -109,6 +113,14 @@ impl HttpResponseFraming {
 
     pub fn status_code(&self) -> Option<u16> {
         self.status_code
+    }
+
+    /// A completed response may keep its upstream socket only when HTTP framing
+    /// is self-delimited and the upstream did not opt out with `Connection: close`.
+    pub fn is_keep_alive_reusable(&self) -> bool {
+        matches!(self.state, ResponseFramingState::Complete)
+            && !self.connection_close
+            && !self.close_delimited
     }
 
     /// Consumes upstream bytes while enforcing HTTP/1.1 framing safety.
@@ -142,9 +154,14 @@ impl HttpResponseFraming {
                             ResponseFramingState::Headers(headers) => headers,
                             _ => unreachable!(),
                         };
-                        let (status_code, body_framing) =
+                        let (status_code, body_framing, connection_close) =
                             parse_response_framing_headers(&headers, self.body_expectation)?;
                         self.status_code = Some(status_code);
+                        if !matches!(body_framing, ResponseBodyFraming::Interim) {
+                            self.connection_close = connection_close;
+                            self.close_delimited =
+                                matches!(body_framing, ResponseBodyFraming::CloseDelimited);
+                        }
                         self.state = match body_framing {
                             ResponseBodyFraming::Interim => {
                                 ResponseFramingState::Headers(Vec::new())
@@ -286,7 +303,7 @@ fn try_push_bounded(bytes: &mut Vec<u8>, byte: u8, max_bytes: usize) -> Result<(
 fn parse_response_framing_headers(
     headers: &[u8],
     body_expectation: ResponseBodyExpectation,
-) -> Result<(u16, ResponseBodyFraming), AppError> {
+) -> Result<(u16, ResponseBodyFraming, bool), AppError> {
     let header_text = std::str::from_utf8(headers)
         .map_err(|_| malformed_upstream_response("response headers are not UTF-8"))?;
     let header_text = header_text
@@ -325,6 +342,7 @@ fn parse_response_framing_headers(
     let mut transfer_encoding_present = false;
     let mut transfer_encoding_chunked = false;
     let mut chunked_coding_seen = false;
+    let mut connection_close = false;
     for line in lines {
         let (name, value) = line
             .split_once(':')
@@ -359,6 +377,11 @@ fn parse_response_framing_headers(
                 chunked_coding_seen |= transfer_encoding_chunked;
             }
         }
+        if name.eq_ignore_ascii_case("Connection") {
+            connection_close |= value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("close"));
+        }
     }
     if transfer_encoding_present && content_length.is_some() {
         return Err(malformed_upstream_response(
@@ -371,12 +394,12 @@ fn parse_response_framing_headers(
         ));
     }
     if (100..200).contains(&status_code) && status_code != 101 {
-        return Ok((status_code, ResponseBodyFraming::Interim));
+        return Ok((status_code, ResponseBodyFraming::Interim, connection_close));
     }
     if body_expectation == ResponseBodyExpectation::HeadResponse
         || matches!(status_code, 101 | 204 | 304)
     {
-        return Ok((status_code, ResponseBodyFraming::None));
+        return Ok((status_code, ResponseBodyFraming::None, connection_close));
     }
     let framing = if transfer_encoding_chunked {
         ResponseBodyFraming::Chunked
@@ -385,7 +408,7 @@ fn parse_response_framing_headers(
     } else {
         ResponseBodyFraming::CloseDelimited
     };
-    Ok((status_code, framing))
+    Ok((status_code, framing, connection_close))
 }
 
 fn parse_chunk_size(line: &[u8]) -> Result<usize, AppError> {

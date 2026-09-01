@@ -2053,6 +2053,7 @@ pub mod snapshot_http {
                                 pending_client_output: PendingSocketOutput::new(),
                                 pending_client_response: PendingClientResponseBatch::Empty,
                                 upstream: None,
+                                reusable_upstream: None,
                                 upstream_transport: UpstreamTransport::plaintext(),
                                 pending_upstream_output: WriteBuffer::default(),
                                 pending_upstream_tls: None,
@@ -2459,29 +2460,53 @@ pub mod snapshot_http {
                             }
                         };
                     let websocket_requested = is_websocket_upgrade(&request);
+                    let client_allows_upstream_reuse = self
+                        .connections
+                        .get(&connection_id)
+                        .is_some_and(|connection| !connection.close_client_after_response);
+                    let reusable_upstream = matches!(tls_policy, UpstreamTlsPolicy::Disabled)
+                        .then(|| UpstreamReuseKey {
+                            service_id: service.id.clone(),
+                            upstream_id: selection.upstream_id.clone(),
+                            address: upstream_addr,
+                        })
+                        .filter(|_| !websocket_requested && client_allows_upstream_reuse);
+                    let reuse_existing =
+                        self.connections
+                            .get(&connection_id)
+                            .is_some_and(|connection| {
+                                reusable_upstream
+                                    .as_ref()
+                                    .is_some_and(|key| connection.can_reuse_upstream(key))
+                            });
+                    if !reuse_existing {
+                        self.drop_upstream(connection_id, registry)?;
+                    }
                     let connection = &self.connections[&connection_id];
                     let original_authority = authority.to_string();
                     let forwarded_scheme =
                         connection.client_transport.forwarded_scheme().to_string();
-                    let planned_upstream_bytes = match planned_selected_upstream_request_len(
-                        &request,
-                        &upstream_target,
-                        &tls_policy,
-                        &connection.client_ip,
-                        &forwarded_scheme,
-                        authority,
-                        websocket_requested,
-                    ) {
-                        Ok(planned) => planned,
-                        Err(_) => {
-                            self.queue_client_response(
-                                connection_id,
-                                registry,
-                                error_response_for_code(ErrorCode::ResourceAllocationFailed),
-                            )?;
-                            return Ok(());
-                        }
-                    };
+                    let planned_upstream_bytes =
+                        match planned_selected_upstream_request_len_with_keep_alive(
+                            &request,
+                            &upstream_target,
+                            &tls_policy,
+                            &connection.client_ip,
+                            &forwarded_scheme,
+                            authority,
+                            websocket_requested,
+                            reusable_upstream.is_some(),
+                        ) {
+                            Ok(planned) => planned,
+                            Err(_) => {
+                                self.queue_client_response(
+                                    connection_id,
+                                    registry,
+                                    error_response_for_code(ErrorCode::ResourceAllocationFailed),
+                                )?;
+                                return Ok(());
+                            }
+                        };
                     let retry_replay_bytes = request_bytes.len();
                     let reservation = {
                         let (connections, payload_ledger) =
@@ -2508,7 +2533,7 @@ pub mod snapshot_http {
                     #[cfg(test)]
                     self.emit_resource_accounting_event();
                     let connection = &self.connections[&connection_id];
-                    let upstream_request = match build_selected_upstream_request(
+                    let upstream_request = match build_selected_upstream_request_with_keep_alive(
                         &request,
                         &upstream_target,
                         &tls_policy,
@@ -2516,6 +2541,7 @@ pub mod snapshot_http {
                         &forwarded_scheme,
                         authority,
                         websocket_requested,
+                        reusable_upstream.is_some(),
                     ) {
                         Ok(request) => request,
                         Err(_) => {
@@ -2588,19 +2614,29 @@ pub mod snapshot_http {
                         Some(route_id.as_str().to_string()),
                         Some(upstream_id),
                     );
-                    self.connect_upstream(
-                        connection_id,
-                        registry,
-                        snapshot,
-                        UpstreamConnectPlan {
-                            address: upstream_addr,
-                            request: upstream_request,
+                    if reuse_existing {
+                        self.reuse_upstream(
+                            connection_id,
+                            registry,
+                            upstream_request,
                             websocket_requested,
-                            service_id: service.id.clone(),
-                            upstream_id: selection.upstream_id,
-                            tls_policy,
-                        },
-                    )
+                        )
+                    } else {
+                        self.connect_upstream(
+                            connection_id,
+                            registry,
+                            snapshot,
+                            UpstreamConnectPlan {
+                                address: upstream_addr,
+                                request: upstream_request,
+                                websocket_requested,
+                                service_id: service.id.clone(),
+                                upstream_id: selection.upstream_id,
+                                tls_policy,
+                                reusable_upstream,
+                            },
+                        )
+                    }
                 }
                 HttpRouteAction::Redirect { status_code, .. } => self.queue_client_response(
                     connection_id,
@@ -2644,6 +2680,7 @@ pub mod snapshot_http {
                 service_id,
                 upstream_id,
                 tls_policy,
+                reusable_upstream,
             } = plan;
             #[cfg(test)]
             if self.stall_upstream_connect {
@@ -2664,6 +2701,7 @@ pub mod snapshot_http {
                     .begin_response_framing(self.limits.max_header_bytes, websocket_requested);
                 connection.pending_upstream_tls =
                     pending_upstream_tls(service_id, upstream_id, &tls_policy);
+                connection.reusable_upstream = reusable_upstream;
                 refresh_deadline_for_connection(connection, &self.resource_limits, Instant::now());
                 return Ok(());
             }
@@ -2686,6 +2724,7 @@ pub mod snapshot_http {
             connection.pending_upstream_output = WriteBuffer::default();
             connection.pending_upstream_tls =
                 pending_upstream_tls(service_id, upstream_id, &tls_policy);
+            connection.reusable_upstream = reusable_upstream;
 
             let mut upstream = match MioTcpStream::connect(upstream_addr) {
                 Ok(upstream) => upstream,
@@ -2725,6 +2764,39 @@ pub mod snapshot_http {
                 return Ok(());
             };
             connection.upstream = Some(upstream);
+            connection.upstream_registered = true;
+            refresh_deadline_for_connection(connection, &self.resource_limits, Instant::now());
+            Ok(())
+        }
+
+        fn reuse_upstream(
+            &mut self,
+            connection_id: usize,
+            registry: &mio::Registry,
+            upstream_request: Vec<u8>,
+            websocket_requested: bool,
+        ) -> io::Result<()> {
+            let Some(connection) = self.connections.get_mut(&connection_id) else {
+                return Ok(());
+            };
+            if connection.io.begin_upstream_connect().is_err()
+                || connection.io.upstream_connected(upstream_request).is_err()
+            {
+                connection.close_after_write = true;
+                connection.deadline = None;
+                return Ok(());
+            }
+            connection.websocket_requested = websocket_requested;
+            connection.begin_response_framing(self.limits.max_header_bytes, websocket_requested);
+            connection.pending_upstream_request = None;
+            connection.pending_upstream_tls = None;
+            connection.pending_upstream_output = WriteBuffer::default();
+            let Some(upstream) = connection.upstream.as_mut() else {
+                connection.close_after_write = true;
+                connection.deadline = None;
+                return Ok(());
+            };
+            registry.register(upstream, upstream_token(connection_id), Interest::WRITABLE)?;
             connection.upstream_registered = true;
             refresh_deadline_for_connection(connection, &self.resource_limits, Instant::now());
             Ok(())
@@ -3221,6 +3293,18 @@ pub mod snapshot_http {
                 self.drop_upstream(connection_id, registry)?;
                 self.queue_client_response(connection_id, registry, response)?;
             } else if finish_response {
+                let retain_upstream =
+                    self.connections
+                        .get(&connection_id)
+                        .is_some_and(|connection| {
+                            connection.reusable_upstream.is_some()
+                                && !connection.close_after_write
+                                && !connection.close_client_after_response
+                                && connection
+                                    .response_framing
+                                    .as_ref()
+                                    .is_some_and(HttpResponseFraming::is_keep_alive_reusable)
+                        });
                 if let Some(connection) = self.connections.get_mut(&connection_id) {
                     if let Some(status_code) = connection
                         .response_framing
@@ -3232,7 +3316,11 @@ pub mod snapshot_http {
                         }
                     }
                 }
-                self.drop_upstream(connection_id, registry)?;
+                if retain_upstream {
+                    self.deactivate_upstream_for_reuse(connection_id, registry)?;
+                } else {
+                    self.drop_upstream(connection_id, registry)?;
+                }
                 let Some(connection) = self.connections.get_mut(&connection_id) else {
                     return Ok(());
                 };
@@ -3659,6 +3747,7 @@ pub mod snapshot_http {
                     service_id: service.id.clone(),
                     upstream_id: selection.upstream_id,
                     tls_policy: selection.tls,
+                    reusable_upstream: None,
                 },
             )?;
             Ok(true)
@@ -4906,6 +4995,27 @@ pub mod snapshot_http {
                     }
                     connection.upstream_registered = false;
                 }
+                connection.reusable_upstream = None;
+            }
+            Ok(())
+        }
+
+        /// Leaves an eligible socket owned by this client but removes it from
+        /// mio interest until the next sequential request selects the same key.
+        fn deactivate_upstream_for_reuse(
+            &mut self,
+            connection_id: usize,
+            registry: &mio::Registry,
+        ) -> io::Result<()> {
+            let Some(connection) = self.connections.get_mut(&connection_id) else {
+                return Ok(());
+            };
+            let Some(upstream) = connection.upstream.as_mut() else {
+                return Ok(());
+            };
+            if connection.upstream_registered {
+                registry.deregister(upstream)?;
+                connection.upstream_registered = false;
             }
             Ok(())
         }
@@ -5196,6 +5306,7 @@ pub mod snapshot_http {
         pending_client_output: PendingSocketOutput,
         pending_client_response: PendingClientResponseBatch,
         upstream: Option<MioTcpStream>,
+        reusable_upstream: Option<UpstreamReuseKey>,
         upstream_transport: UpstreamTransport,
         pending_upstream_output: WriteBuffer,
         pending_upstream_tls: Option<PendingUpstreamTls>,
@@ -5261,6 +5372,14 @@ pub mod snapshot_http {
         service_id: ServiceId,
         upstream_id: UpstreamId,
         tls_policy: UpstreamTlsPolicy,
+        reusable_upstream: Option<UpstreamReuseKey>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct UpstreamReuseKey {
+        service_id: ServiceId,
+        upstream_id: UpstreamId,
+        address: SocketAddr,
     }
 
     fn pending_upstream_tls(
@@ -5281,6 +5400,13 @@ pub mod snapshot_http {
     }
 
     impl SnapshotMioConnection {
+        fn can_reuse_upstream(&self, key: &UpstreamReuseKey) -> bool {
+            self.upstream.is_some()
+                && !self.upstream_registered
+                && self.reusable_upstream.as_ref() == Some(key)
+                && matches!(self.upstream_transport, UpstreamTransport::Plaintext(_))
+        }
+
         fn begin_response_framing(&mut self, max_header_bytes: usize, websocket_requested: bool) {
             self.response_header_sanitizer = (!websocket_requested).then(|| {
                 UpstreamResponseHeaderSanitizer::new(
@@ -5762,6 +5888,32 @@ pub mod snapshot_http {
     where
         T: UpstreamRequestTarget + ?Sized,
     {
+        build_upstream_request_with_host_override_and_connection_close(
+            request,
+            upstream,
+            client_ip,
+            scheme,
+            original_host,
+            preserve_upgrade_headers,
+            host_override,
+            !preserve_upgrade_headers,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_upstream_request_with_host_override_and_connection_close<T>(
+        request: &HttpRequest,
+        upstream: &T,
+        client_ip: &str,
+        scheme: &str,
+        original_host: &str,
+        preserve_upgrade_headers: bool,
+        host_override: Option<&str>,
+        force_connection_close: bool,
+    ) -> io::Result<Vec<u8>>
+    where
+        T: UpstreamRequestTarget + ?Sized,
+    {
         let mut headers = upstream_request_headers(&request.headers, preserve_upgrade_headers);
         headers.retain(|header| {
             !matches!(
@@ -5780,11 +5932,11 @@ pub mod snapshot_http {
         }
 
         let request_path = upstream.join_request_path(&request.path);
-        let planned_len = planned_upstream_request_len(
+        let planned_len = planned_upstream_request_len_with_connection_close(
             request,
             &request_path,
             &headers,
-            preserve_upgrade_headers,
+            force_connection_close,
         )?;
 
         let mut upstream_request = Vec::new();
@@ -5799,7 +5951,7 @@ pub mod snapshot_http {
         for Header { name, value } in headers {
             write!(upstream_request, "{name}: {value}\r\n")?;
         }
-        if !preserve_upgrade_headers {
+        if force_connection_close {
             upstream_request.extend_from_slice(b"Connection: close\r\n");
         }
         upstream_request.extend_from_slice(b"\r\n");
@@ -5815,11 +5967,11 @@ pub mod snapshot_http {
         Ok(upstream_request)
     }
 
-    fn planned_upstream_request_len(
+    fn planned_upstream_request_len_with_connection_close(
         request: &HttpRequest,
         request_path: &str,
         headers: &[Header],
-        preserve_upgrade_headers: bool,
+        force_connection_close: bool,
     ) -> io::Result<usize> {
         let mut total = checked_wire_length(&[
             request.method.len(),
@@ -5832,7 +5984,7 @@ pub mod snapshot_http {
         for header in headers {
             total = checked_wire_length(&[total, header.name.len(), 2, header.value.len(), 2])?;
         }
-        if !preserve_upgrade_headers {
+        if force_connection_close {
             total = checked_wire_length(&[total, b"Connection: close\r\n".len()])?;
         }
         checked_wire_length(&[total, 2, request.body.len()])
@@ -5865,7 +6017,7 @@ pub mod snapshot_http {
         original_host: &str,
         preserve_upgrade_headers: bool,
     ) -> io::Result<Vec<u8>> {
-        let planned_len = planned_selected_upstream_request_len(
+        build_selected_upstream_request_with_keep_alive(
             request,
             upstream,
             tls_policy,
@@ -5873,12 +6025,36 @@ pub mod snapshot_http {
             scheme,
             original_host,
             preserve_upgrade_headers,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_selected_upstream_request_with_keep_alive(
+        request: &HttpRequest,
+        upstream: &UpstreamEndpoint,
+        tls_policy: &UpstreamTlsPolicy,
+        client_ip: &str,
+        scheme: &str,
+        original_host: &str,
+        preserve_upgrade_headers: bool,
+        keep_alive: bool,
+    ) -> io::Result<Vec<u8>> {
+        let planned_len = planned_selected_upstream_request_len_with_keep_alive(
+            request,
+            upstream,
+            tls_policy,
+            client_ip,
+            scheme,
+            original_host,
+            preserve_upgrade_headers,
+            keep_alive,
         )?;
         let host_override = match tls_policy {
             UpstreamTlsPolicy::Disabled => None,
             UpstreamTlsPolicy::ServerAuthenticated { http_host, .. } => Some(http_host.as_str()),
         };
-        let output = build_upstream_request_with_host_override(
+        let output = build_upstream_request_with_host_override_and_connection_close(
             request,
             upstream,
             client_ip,
@@ -5886,6 +6062,7 @@ pub mod snapshot_http {
             original_host,
             preserve_upgrade_headers,
             host_override,
+            !preserve_upgrade_headers && !keep_alive,
         )?;
         if output.len() != planned_len {
             return Err(io::Error::new(
@@ -5905,6 +6082,29 @@ pub mod snapshot_http {
         scheme: &str,
         original_host: &str,
         preserve_upgrade_headers: bool,
+    ) -> io::Result<usize> {
+        planned_selected_upstream_request_len_with_keep_alive(
+            request,
+            upstream,
+            tls_policy,
+            client_ip,
+            scheme,
+            original_host,
+            preserve_upgrade_headers,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn planned_selected_upstream_request_len_with_keep_alive(
+        request: &HttpRequest,
+        upstream: &UpstreamEndpoint,
+        tls_policy: &UpstreamTlsPolicy,
+        client_ip: &str,
+        scheme: &str,
+        original_host: &str,
+        preserve_upgrade_headers: bool,
+        keep_alive: bool,
     ) -> io::Result<usize> {
         let host_override = match tls_policy {
             UpstreamTlsPolicy::Disabled => None,
@@ -5926,11 +6126,11 @@ pub mod snapshot_http {
                 host.value = host_override.to_string();
             }
         }
-        planned_upstream_request_len(
+        planned_upstream_request_len_with_connection_close(
             request,
             &upstream.join_request_path(&request.path),
             &headers,
-            preserve_upgrade_headers,
+            !preserve_upgrade_headers && !keep_alive,
         )
     }
 
@@ -12756,6 +12956,25 @@ mod tests {
     }
 
     #[test]
+    fn close_delimited_upstream_response_is_not_keep_alive_reusable() {
+        let mut framing = HttpResponseFraming::new(1024, 1024);
+        framing.push(b"HTTP/1.1 200 OK\r\n\r\nclose-body").unwrap();
+        framing.finish_on_eof().unwrap();
+
+        assert!(!framing.is_keep_alive_reusable());
+    }
+
+    #[test]
+    fn connection_close_upstream_response_is_not_keep_alive_reusable() {
+        let mut framing = HttpResponseFraming::new(1024, 1024);
+        framing
+            .push(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .unwrap();
+
+        assert!(!framing.is_keep_alive_reusable());
+    }
+
+    #[test]
     fn snapshot_mio_runtime_replaces_malformed_unstarted_response_with_502() {
         let (response, _, resource_events) =
             run_raw_response_through_mio("GET", b"not-http\r\nHeader: value\r\n\r\n");
@@ -12914,7 +13133,208 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_mio_runtime_uses_one_upstream_connection_per_persistent_client_request() {
+    fn snapshot_mio_runtime_reuses_one_plaintext_upstream_for_sequential_persistent_client_requests(
+    ) {
+        let backend_listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let backend_addr = backend_listener.local_addr().unwrap();
+        let backend = thread::spawn(move || {
+            let (mut stream, _) = backend_listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut requests = Vec::new();
+            for response in [
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirst".as_slice(),
+                b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecond"
+                    .as_slice(),
+            ] {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 512];
+                loop {
+                    let read = stream.read(&mut buffer).unwrap();
+                    assert_ne!(read, 0, "upstream closed before its next request");
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                stream.write_all(response).unwrap();
+                requests.push(String::from_utf8(request).unwrap());
+            }
+            requests
+        });
+        let snapshot = snapshot_for_runtime(
+            vec![route_to_service(
+                "api",
+                "api.example.test",
+                "/",
+                "api-service",
+            )],
+            vec![service_with_upstream("api-service", backend_addr)],
+        );
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default())
+                    .with_resource_limits(ResourceLimits {
+                        upstream_read_timeout: Duration::from_millis(300),
+                        ..ResourceLimits::default()
+                    }),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(b"GET /one HTTP/1.1\r\nHost: api.example.test\r\n\r\n")
+            .unwrap();
+        let mut first = [0_u8; 256];
+        let first_len = client.read(&mut first).unwrap();
+        assert!(String::from_utf8_lossy(&first[..first_len]).contains("200 OK"));
+
+        client
+            .write_all(b"GET /two HTTP/1.1\r\nHost: api.example.test\r\n\r\n")
+            .unwrap();
+        let mut second_bytes = [0_u8; 256];
+        let second_len = client.read(&mut second_bytes).unwrap();
+        let second = String::from_utf8_lossy(&second_bytes[..second_len]).to_string();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut final_bytes = Vec::new();
+        client.read_to_end(&mut final_bytes).unwrap();
+
+        runtime_thread.join().unwrap();
+        let requests = backend.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("GET /one HTTP/1.1\r\n"));
+        assert!(requests[1].starts_with("GET /two HTTP/1.1\r\n"));
+        assert!(
+            !requests[0].contains("Connection: close\r\n"),
+            "reusable request unexpectedly closed upstream: {:?}",
+            requests[0]
+        );
+        assert!(
+            second.contains("200 OK") && second.contains("second"),
+            "response={second:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_does_not_reuse_plaintext_upstream_after_route_identity_change() {
+        let first_listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let first_addr = first_listener.local_addr().unwrap();
+        let first_backend = thread::spawn(move || {
+            let (mut stream, _) = first_listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut first_request = Vec::new();
+            let mut buffer = [0_u8; 512];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                assert_ne!(read, 0, "first upstream closed before its response request");
+                first_request.extend_from_slice(&buffer[..read]);
+                if first_request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirst")
+                .unwrap();
+            let next_read = stream.read(&mut buffer);
+            (
+                String::from_utf8(first_request).unwrap(),
+                matches!(next_read, Ok(read) if read > 0),
+            )
+        });
+
+        let second_listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let second_addr = second_listener.local_addr().unwrap();
+        let second_backend = thread::spawn(move || {
+            let (mut stream, _) = second_listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 512];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                assert_ne!(read, 0, "second upstream closed before its request");
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecond",
+                )
+                .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+
+        let snapshot = snapshot_for_runtime(
+            vec![
+                route_to_service("first", "first.example.test", "/", "first-service"),
+                route_to_service("second", "second.example.test", "/", "second-service"),
+            ],
+            vec![
+                service_with_upstream("first-service", first_addr),
+                service_with_upstream("second-service", second_addr),
+            ],
+        );
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default()),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: first.example.test\r\n\r\n")
+            .unwrap();
+        let mut first_response = [0_u8; 256];
+        let first_len = client.read(&mut first_response).unwrap();
+        assert!(String::from_utf8_lossy(&first_response[..first_len]).contains("first"));
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: second.example.test\r\n\r\n")
+            .unwrap();
+        let mut second_response = [0_u8; 256];
+        let second_len = client.read(&mut second_response).unwrap();
+        assert!(String::from_utf8_lossy(&second_response[..second_len]).contains("second"));
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut final_bytes = Vec::new();
+        client.read_to_end(&mut final_bytes).unwrap();
+
+        runtime_thread.join().unwrap();
+        let (first_request, first_saw_second_request) = first_backend.join().unwrap();
+        let second_request = second_backend.join().unwrap();
+        assert!(first_request.contains("Host: first.example.test"));
+        assert!(
+            !first_saw_second_request,
+            "route change reused first upstream"
+        );
+        assert!(second_request.contains("Host: second.example.test"));
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_does_not_reuse_after_upstream_connection_close() {
         let (backend_addr, backend) = spawn_text_backend_for_requests("reused", 2);
         let snapshot = snapshot_for_runtime(
             vec![route_to_service(
