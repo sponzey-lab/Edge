@@ -77,6 +77,7 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
             "scripts/smoke_slow_header_memory.sh": "edge-slow-header-cycles collect",
             "scripts/smoke_slow_body_memory.sh": "edge-slow-body-cycles collect",
             "scripts/smoke_slow_response_memory.sh": "edge-slow-response-cycles collect",
+            "scripts/smoke_connection_churn_memory.sh": "edge-connection-churn run",
         }
 
         for relative_path, target in expected.items():

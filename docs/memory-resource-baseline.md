@@ -469,6 +469,10 @@ after the 4MiB minimum held payload, cleanup, recovery, source identity, and pla
 `slow-response-5cycle-v1.json` only after its 8MiB held-payload, cleanup, recovery, source identity,
 and plateau checks pass.
 
+`scripts/smoke_connection_churn_memory.sh` runs five exact 10,000-request connect/request/close
+cycles. It publishes `connection-churn-50k-v1.json` only after every cycle reaches 0/0 normal
+cleanup and the source identity, ceiling, plateau, stale-identity, and tamper checks pass.
+
 ## Task 051 Canonical Slow Request Capacity Contract
 
 `CanonicalSlowRequestProfile` fixes slow-header at 256 connections and slow-body at 128 connections.
