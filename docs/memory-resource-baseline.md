@@ -455,6 +455,11 @@ The same isolated adapter boundary applies to `scripts/smoke_connection_capacity
 soft file-descriptor limit of at least 4,096, holds exactly 1,024 plaintext HTTP connections, then
 validates both held and released evidence before publishing `held-1024-v2.json`.
 
+`scripts/smoke_slow_header_memory.sh` uses the same isolated bootstrap and bounded upstream fixture
+for one warm-up plus five 256-connection partial-header cycles. It publishes the registry-named
+`slow-header-5cycle-v1.json` only after every hold, cleanup, recovery, source identity, and plateau
+check succeeds.
+
 ## Task 051 Canonical Slow Request Capacity Contract
 
 `CanonicalSlowRequestProfile` fixes slow-header at 256 connections and slow-body at 128 connections.
