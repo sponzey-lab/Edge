@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 set -eu
+. ./scripts/test_cargo.sh
 
 case "$(uname -s)" in Darwin|Linux) ;; *) exit 2 ;; esac
 command -v python3 >/dev/null 2>&1 || exit 2

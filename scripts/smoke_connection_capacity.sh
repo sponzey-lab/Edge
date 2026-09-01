@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 set -eu
+. ./scripts/test_cargo.sh
 
 case "$(uname -s)" in
   Darwin|Linux) ;;

@@ -104,6 +104,11 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
         self.assertIn('node:22.14.0-bookworm', idle)
         self.assertIn('SPONZEY_PERFORMANCE_DASHBOARD_PORT="$dashboard_port"', idle)
 
+    def test_memory_adapters_have_the_docker_cargo_fallback(self) -> None:
+        helper = (ROOT / "scripts" / "test_cargo.sh").read_text(encoding="utf-8")
+        self.assertIn('rust:1.94.0-bookworm cargo', helper)
+        self.assertIn('docker run --rm', helper)
+
 
 if __name__ == "__main__":
     unittest.main()
