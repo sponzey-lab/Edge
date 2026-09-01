@@ -101,6 +101,7 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
 
         self.assertIn('-v "$output_parent:/evidence"', idle)
         self.assertIn('"/evidence/$output_name/idle-v2.json"', idle)
+        self.assertIn('node:22.14.0-bookworm', idle)
 
 
 if __name__ == "__main__":

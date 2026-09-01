@@ -17,8 +17,12 @@ cleanup() {
   docker compose --profile performance -f docker-compose.test.yml rm -s -f edge-perf node-upstream >/dev/null 2>&1 || true
 }
 trap cleanup EXIT HUP INT TERM
-node tests/performance/bin/prepare-pki-runtime.mjs --clean --output "$runtime" >/dev/null 2>&1 || true
-node tests/performance/bin/prepare-pki-runtime.mjs --output "$runtime"
+prepare_runtime() {
+  docker run --rm --user "$(id -u):$(id -g)" -v "$root:/workspace" -w /workspace \
+    node:22.14.0-bookworm node tests/performance/bin/prepare-pki-runtime.mjs "$@"
+}
+prepare_runtime --clean --output "$runtime" >/dev/null 2>&1 || true
+prepare_runtime --output "$runtime"
 docker compose --profile performance -f docker-compose.test.yml up -d --build --wait edge-perf node-upstream
 pid=$(docker inspect --format '{{.State.Pid}}' sponzey-edge-test-edge-perf-1)
 [ "$pid" -gt 0 ] 2>/dev/null || { echo "Edge container PID is unavailable" >&2; exit 1; }
