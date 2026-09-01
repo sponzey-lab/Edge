@@ -4,6 +4,7 @@ set -eu
 [ "$#" -eq 1 ] || { echo "usage: $0 <new-output-directory>" >&2; exit 2; }
 output=$1
 [ ! -e "$output" ] || { echo "output directory must be new" >&2; exit 2; }
+mkdir -p "$(dirname -- "$output")"
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
