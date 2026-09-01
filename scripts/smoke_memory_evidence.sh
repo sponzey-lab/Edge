@@ -5,6 +5,8 @@ set -eu
 output=$1
 [ ! -e "$output" ] || { echo "output directory must be new" >&2; exit 2; }
 mkdir -p "$(dirname -- "$output")"
+output_parent=$(CDPATH= cd -- "$(dirname -- "$output")" && pwd)
+output_name=$(basename -- "$output")
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
@@ -23,14 +25,16 @@ pid=$(docker inspect --format '{{.State.Pid}}' sponzey-edge-test-edge-perf-1)
 build_identity=$(source_tree_build_id)
 config_sha256=$(shasum -a 256 tests/performance/config/edge-perf.toml | awk '{print $1}')
 run_harness() {
-  docker run --rm --pid=host -v "$root:/workspace" -w /workspace rust:1.94.0-bookworm \
+  docker run --rm --pid=host -v "$root:/workspace" -v "$output_parent:/evidence" \
+    -w /workspace rust:1.94.0-bookworm \
     cargo run -p edge-memory-harness --bin edge-memory-evidence -- "$@"
 }
 run_harness sample \
   --pid "$pid" --scenario idle --scenario-version phase011-idle-v2 \
   --build-identity "$build_identity" --config-sha256 "$config_sha256" \
-  --samples 3 --interval-ms 1000 --output "$output/idle-v2.json" --digest-output "$output/idle-v2.sha256"
+  --samples 3 --interval-ms 1000 --output "/evidence/$output_name/idle-v2.json" \
+  --digest-output "/evidence/$output_name/idle-v2.sha256"
 run_harness validate \
   --scenario idle --scenario-version phase011-idle-v2 \
   --build-identity "$build_identity" --config-sha256 "$config_sha256" \
-  --report "$output/idle-v2.json" --digest "$output/idle-v2.sha256"
+  --report "/evidence/$output_name/idle-v2.json" --digest "/evidence/$output_name/idle-v2.sha256"

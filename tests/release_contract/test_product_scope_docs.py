@@ -96,6 +96,12 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
         self.assertIn("git ls-files --cached --others --exclude-standard", identity)
         self.assertNotIn("find .", identity)
 
+    def test_idle_memory_adapter_mounts_caller_output_for_host_pid_harness(self) -> None:
+        idle = (ROOT / "scripts" / "smoke_memory_evidence.sh").read_text(encoding="utf-8")
+
+        self.assertIn('-v "$output_parent:/evidence"', idle)
+        self.assertIn('"/evidence/$output_name/idle-v2.json"', idle)
+
 
 if __name__ == "__main__":
     unittest.main()
