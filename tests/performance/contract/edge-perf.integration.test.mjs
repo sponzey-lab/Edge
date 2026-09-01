@@ -89,6 +89,29 @@ test("release edge-perf proxies the fixed Host route to node-upstream", { concur
   assert.equal(output, "200:sponzey-edge-small-payload-v1\n");
 });
 
+test("release edge-perf advertises final-response connection close before terminating a POST socket", { concurrency: false }, () => {
+  prepareRuntime();
+  startPerformanceServices();
+
+  const output = compose(
+    "exec",
+    "-T",
+    "node-upstream",
+    "node",
+    "-e",
+    [
+      "const http = require('node:http');",
+      "const body = 'edge-request-body-v1';",
+      "const request = http.request({host:'172.30.0.2',port:8080,path:'/inspect/body',method:'POST',headers:{Host:'edge.test','content-type':'text/plain','content-length':Buffer.byteLength(body)}}, response => {",
+      "let payload = ''; response.on('data', chunk => { payload += chunk; });",
+      "response.on('end', () => { process.stdout.write(`${response.statusCode}:${response.headers.connection}:${JSON.parse(payload).digest}`); });",
+      "}); request.on('error', error => { process.stderr.write(error.message); process.exitCode = 1; }); request.end(body);",
+    ].join(""),
+  );
+
+  assert.equal(output, "200:close:sha256:bfcb757022c48360ee7ffe74943b9cc7a973e98f4b55732d86021ce1493a4ea3");
+});
+
 test("release edge-perf rejects malformed framing and oversized declared bodies before upstream use", { concurrency: false }, () => {
   prepareRuntime();
   startPerformanceServices();

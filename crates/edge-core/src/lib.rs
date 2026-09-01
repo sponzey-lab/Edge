@@ -12527,7 +12527,10 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\nConnection: keep-alive\r\n\r\n",
         );
 
-        assert_eq!(response, b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\n");
+        assert_eq!(
+            response,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\nConnection: close\r\n\r\n"
+        );
         assert!(upstream_request.starts_with("HEAD / HTTP/1.1\r\n"));
         assert_eq!(
             resource_events.last(),
@@ -12554,12 +12557,8 @@ mod tests {
         assert!(response.contains("Content-Length: 2\r\n"));
         assert!(response.contains("ETag: stable\r\n"));
         assert!(response.ends_with("\r\n\r\nok"));
-        for header in [
-            "Connection:",
-            "X-Upstream-Hop:",
-            "Proxy-Connection:",
-            "Keep-Alive:",
-        ] {
+        assert!(response.contains("Connection: close\r\n"));
+        for header in ["X-Upstream-Hop:", "Proxy-Connection:", "Keep-Alive:"] {
             assert!(
                 !response.contains(header),
                 "response forwarded hop-by-hop header {header}: {response:?}"
@@ -12736,7 +12735,9 @@ mod tests {
         );
         assert_eq!(
             response.len(),
-            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n").len() + body_len
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n")
+                .len()
+                + body_len
         );
         assert!(
             api_request.contains("Host: api.example.test"),
@@ -13515,7 +13516,7 @@ mod tests {
         assert!(upstream_request.contains("X-Forwarded-Proto: http"));
         assert!(upstream_request.contains("X-Forwarded-Host: example.test"));
         assert!(response.contains("HTTP/1.1 200 OK"));
-        assert!(!response.contains("Connection: close"));
+        assert!(response.contains("Connection: close"));
         assert!(response.ends_with("ok"));
     }
 

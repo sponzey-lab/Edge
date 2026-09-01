@@ -9,7 +9,10 @@ use crate::{Header, HttpRequest};
 /// The snapshot runtime validates response framing before passing bytes here.
 /// This adapter removes response hop-by-hop fields without buffering the body.
 /// `Transfer-Encoding` remains because the runtime forwards the already-framed
-/// chunk stream rather than decoding and re-encoding it.
+/// chunk stream rather than decoding and re-encoding it. The current runtime
+/// closes every non-upgrade client connection after its final response, so the
+/// projected final header explicitly advertises `Connection: close`; otherwise
+/// an HTTP/1.1 client can reuse a connection the runtime has already closed.
 #[derive(Debug)]
 pub(crate) struct UpstreamResponseHeaderSanitizer {
     headers: Vec<u8>,
@@ -131,6 +134,7 @@ fn sanitize_response_header_block(headers: &[u8]) -> Result<(Vec<u8>, bool), App
                 && !connection_tokens.iter().any(|token| token == &name))
     });
 
+    let interim = (100..200).contains(&status_code) && status_code != 101;
     let mut sanitized = String::from(status_line);
     sanitized.push_str("\r\n");
     for header in retained {
@@ -139,11 +143,11 @@ fn sanitize_response_header_block(headers: &[u8]) -> Result<(Vec<u8>, bool), App
         sanitized.push_str(&header.value);
         sanitized.push_str("\r\n");
     }
+    if !interim {
+        sanitized.push_str("Connection: close\r\n");
+    }
     sanitized.push_str("\r\n");
-    Ok((
-        sanitized.into_bytes(),
-        (100..200).contains(&status_code) && status_code != 101,
-    ))
+    Ok((sanitized.into_bytes(), interim))
 }
 
 fn response_header_error(code: ErrorCode, message: &'static str) -> AppError {
@@ -284,7 +288,7 @@ mod tests {
 
         assert_eq!(
             projected,
-            "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\nETag: stable\r\n\r\nok"
+            "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\nETag: stable\r\nConnection: close\r\n\r\nok"
         );
     }
 }

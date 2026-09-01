@@ -11,11 +11,11 @@ CANONICAL_REPOSITORY = "https://github.com/sponzey-lab/Sponzey-Edge"
 
 
 class ReleaseMetadataContractTest(unittest.TestCase):
-    def test_current_compose_upgrade_capability_repair_candidate_metadata_is_v008_before_tagging(self) -> None:
+    def test_current_compose_upgrade_and_connection_close_repair_candidate_metadata_is_v009_before_tagging(self) -> None:
         manifest = (ROOT / "apps" / "edge-proxy" / "Cargo.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "0.0.8"', manifest)
+        self.assertIn('version = "0.0.9"', manifest)
         current_state = (ROOT / "docs" / "current-state.md").read_text(encoding="utf-8")
-        self.assertIn("v0.0.8 candidate metadata", current_state)
+        self.assertIn("v0.0.9 candidate metadata", current_state)
         self.assertIn("no tag or published artifact", current_state)
 
     def make_workspace(

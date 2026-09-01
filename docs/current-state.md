@@ -25,9 +25,10 @@ read-only canonical primary-config mount and first-install preservation behavior
 operator documentation omits the required fixed `runtime.env` Compose input. The public `v0.0.7`
 prerelease corrects that command, but its root-only Compose backup override lacks the minimum
 capability required to open the edge-owned data lock after `cap_drop: ALL`. The current tree
-carries `v0.0.8 candidate metadata`, but has no tag or published artifact. It adds only
-`DAC_OVERRIDE` to that short-lived root override and pins the contract; its source-level
-contracts do not replace the required same-identity clean-host matrix.
+carries `v0.0.9 candidate metadata`, but has no tag or published artifact. It adds only
+`DAC_OVERRIDE` to that short-lived root override and makes its final non-upgrade client
+response explicitly advertise `Connection: close`, matching the runtime socket lifecycle.
+Its source-level contracts do not replace the required same-identity clean-host matrix.
 Before a candidate prerelease is assembled, the tag workflow anonymously pulls its exact GHCR
 digest and fails closed unless the inspected OCI revision and version labels equal the tagged
 commit and SemVer tag.
