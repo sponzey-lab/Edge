@@ -35,6 +35,8 @@ fn connection_io_contract_preserves_transition_rejection_and_buffer_lifecycle() 
     assert_eq!(io.connection.state, ConnectionState::WritingClientResponse);
     let buffered = io.client_write_buffer().remaining_len();
     assert_eq!(io.advance_client_write(buffered), Ok(buffered));
+    assert_eq!(io.connection.state, ConnectionState::WritingClientResponse);
+    io.finish_client_response(false).unwrap();
     assert_eq!(io.connection.state, ConnectionState::Draining);
     assert!(io.client_write_buffer().is_complete());
 }

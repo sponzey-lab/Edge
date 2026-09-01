@@ -244,7 +244,7 @@ pub mod legacy_single_upstream {
 
         let mut response = Vec::new();
         upstream_stream.read_to_end(&mut response)?;
-        UpstreamResponseHeaderSanitizer::new(limits.max_header_bytes)
+        UpstreamResponseHeaderSanitizer::new(limits.max_header_bytes, true)
             .sanitize(&response)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.message))
     }
@@ -2062,6 +2062,7 @@ pub mod snapshot_http {
                                 accepted_at,
                                 access_log: None,
                                 close_after_write: false,
+                                close_client_after_response: false,
                                 pending_upstream_request: None,
                                 websocket_requested: false,
                                 websocket_response: Vec::new(),
@@ -2269,6 +2270,14 @@ pub mod snapshot_http {
                                     break;
                                 }
                                 Err(error) => {
+                                    // A request-framing failure makes the remaining bytes on this
+                                    // connection untrustworthy.  Reply once, then close instead of
+                                    // interpreting a possible pipelined suffix as a new request.
+                                    if let Some(connection) =
+                                        self.connections.get_mut(&connection_id)
+                                    {
+                                        connection.close_client_after_response = true;
+                                    }
                                     response = Some(error_response_for_code(error.code));
                                     break;
                                 }
@@ -2356,6 +2365,12 @@ pub mod snapshot_http {
             let request = match parse_http_request(request_bytes, &self.limits) {
                 Ok(request) => request,
                 Err(error) => {
+                    // `receive_client_bytes` accepts complete byte sequences before this
+                    // semantic parser rejects them.  Do not reuse that client socket after a
+                    // malformed request: its unread suffix cannot be safely delimited.
+                    if let Some(connection) = self.connections.get_mut(&connection_id) {
+                        connection.close_client_after_response = true;
+                    }
                     self.queue_client_response(
                         connection_id,
                         registry,
@@ -2364,6 +2379,15 @@ pub mod snapshot_http {
                     return Ok(());
                 }
             };
+            if let Some(connection) = self.connections.get_mut(&connection_id) {
+                connection.close_client_after_response = request
+                    .headers
+                    .iter()
+                    .filter(|header| header.name.eq_ignore_ascii_case("Connection"))
+                    .flat_map(|header| header.value.split(','))
+                    .any(|token| token.trim().eq_ignore_ascii_case("close"))
+                    || connection.client_transport.forwarded_scheme() == "https";
+            }
             self.begin_access_log(connection_id, snapshot, &request);
 
             let Some(authority) = request.header_value("Host") else {
@@ -3768,6 +3792,8 @@ pub mod snapshot_http {
             let mut resume_upstream_read = false;
             let mut wait_for_upstream = false;
             let mut wait_for_client_read = false;
+            let mut completed_access_log = None;
+            let mut completed_drain_reference = None;
             #[cfg(test)]
             let mut response_accounting_changed = false;
             let resource_limits = self.resource_limits.clone();
@@ -3812,19 +3838,48 @@ pub mod snapshot_http {
                             if connection.io.connection.state
                                 == ConnectionState::WritingClientResponse
                             {
-                                connection.close_after_write = true;
-                                connection.deadline = None;
-                                if connection
-                                    .client_transport
-                                    .request_close_notify()
-                                    .unwrap_or(false)
+                                let keep_alive = !connection.close_after_write
+                                    && !connection.close_client_after_response;
+                                let close_response = !keep_alive
+                                    || connection
+                                        .resource_charges
+                                        .release_all(payload_ledger)
+                                        .is_err();
+                                if close_response
+                                    || connection.io.finish_client_response(true).is_err()
                                 {
-                                    connection
-                                        .pending_client_output
-                                        .pull_from(&mut connection.client_transport, usize::MAX);
-                                    if !connection.pending_client_output.is_empty() {
-                                        continue;
+                                    connection.close_after_write = true;
+                                    connection.deadline = None;
+                                    let _ = connection.io.finish_client_response(false);
+                                    if connection
+                                        .client_transport
+                                        .request_close_notify()
+                                        .unwrap_or(false)
+                                    {
+                                        connection.pending_client_output.pull_from(
+                                            &mut connection.client_transport,
+                                            usize::MAX,
+                                        );
+                                        if !connection.pending_client_output.is_empty() {
+                                            continue;
+                                        }
                                     }
+                                } else {
+                                    completed_access_log = connection.access_log.take();
+                                    completed_drain_reference = connection.drain_reference.take();
+                                    connection.close_client_after_response = false;
+                                    connection.pending_upstream_request = None;
+                                    connection.pending_upstream_tls = None;
+                                    connection.pending_upstream_output = WriteBuffer::default();
+                                    connection.response_framing = None;
+                                    connection.response_header_sanitizer = None;
+                                    connection.retry = None;
+                                    wait_for_client_read = true;
+                                    refresh_deadline_for_connection(
+                                        connection,
+                                        &resource_limits,
+                                        Instant::now(),
+                                    );
                                 }
                             }
                             break;
@@ -3909,22 +3964,56 @@ pub mod snapshot_http {
                                         &resource_limits,
                                         Instant::now(),
                                     );
+                                } else if connection.io.connection.state
+                                    == ConnectionState::WritingClientResponse
+                                {
+                                    let keep_alive = !connection.close_after_write
+                                        && !connection.close_client_after_response;
+                                    let close_response = !keep_alive
+                                        || connection
+                                            .resource_charges
+                                            .release_all(payload_ledger)
+                                            .is_err();
+                                    if close_response
+                                        || connection.io.finish_client_response(true).is_err()
+                                    {
+                                        connection.close_after_write = true;
+                                        connection.deadline = None;
+                                        let _ = connection.io.finish_client_response(false);
+                                        if connection
+                                            .client_transport
+                                            .request_close_notify()
+                                            .unwrap_or(false)
+                                        {
+                                            connection.pending_client_output.pull_from(
+                                                &mut connection.client_transport,
+                                                usize::MAX,
+                                            );
+                                            if !connection.pending_client_output.is_empty() {
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        completed_access_log = connection.access_log.take();
+                                        completed_drain_reference =
+                                            connection.drain_reference.take();
+                                        connection.close_client_after_response = false;
+                                        connection.pending_upstream_request = None;
+                                        connection.pending_upstream_tls = None;
+                                        connection.pending_upstream_output = WriteBuffer::default();
+                                        connection.response_framing = None;
+                                        connection.response_header_sanitizer = None;
+                                        connection.retry = None;
+                                        wait_for_client_read = true;
+                                        refresh_deadline_for_connection(
+                                            connection,
+                                            &resource_limits,
+                                            Instant::now(),
+                                        );
+                                    }
                                 } else {
                                     connection.close_after_write = true;
                                     connection.deadline = None;
-                                    if connection
-                                        .client_transport
-                                        .request_close_notify()
-                                        .unwrap_or(false)
-                                    {
-                                        connection.pending_client_output.pull_from(
-                                            &mut connection.client_transport,
-                                            usize::MAX,
-                                        );
-                                        if !connection.pending_client_output.is_empty() {
-                                            continue;
-                                        }
-                                    }
                                 }
                                 break;
                             }
@@ -3966,6 +4055,12 @@ pub mod snapshot_http {
             #[cfg(test)]
             if response_accounting_changed {
                 self.emit_resource_accounting_event();
+            }
+            if let Some(log) = completed_access_log.as_ref() {
+                self.emit_completed_access_log(log);
+            }
+            if let Some(reference) = completed_drain_reference.as_ref() {
+                self.upstream_selector.release_drain_reference(reference);
             }
             if resume_upstream_read {
                 self.resume_upstream_read_if_needed(connection_id, registry)?;
@@ -4448,10 +4543,16 @@ pub mod snapshot_http {
                 }
             }
             if let Some(status_code) = decision.status_code {
-                let response = upstream_timeout_failure.map_or_else(
+                let mut response = upstream_timeout_failure.map_or_else(
                     || http_error_response(status_code, decision.reason),
                     upstream_failure_response,
                 );
+                if decision.kind == ConnectionTimeoutKind::ClientIdle {
+                    if let Some(connection) = self.connections.get_mut(&connection_id) {
+                        connection.close_client_after_response = true;
+                    }
+                    response = response_with_connection_close(response);
+                }
                 self.queue_client_response(connection_id, registry, response)?;
             } else if let Some(connection) = self.connections.get_mut(&connection_id) {
                 let _ = connection
@@ -4484,6 +4585,7 @@ pub mod snapshot_http {
                     .map(str::to_string)
                     .unwrap_or_else(|| format!("proxy-{connection_id}"));
                 connection.access_log = Some(AccessLogDraft {
+                    started_at: Instant::now(),
                     request_id,
                     revision_id: snapshot.revision_id.as_str().to_string(),
                     route_id: None,
@@ -4516,10 +4618,18 @@ pub mod snapshot_http {
             let Some(log) = &connection.access_log else {
                 return;
             };
+            self.emit_access_log_event(log);
+        }
+
+        fn emit_completed_access_log(&self, log: &AccessLogDraft) {
+            self.emit_access_log_event(log);
+        }
+
+        fn emit_access_log_event(&self, log: &AccessLogDraft) {
             let Some(status_code) = log.status_code else {
                 return;
             };
-            let duration_ms = connection.accepted_at.elapsed().as_millis() as u64;
+            let duration_ms = log.started_at.elapsed().as_millis() as u64;
             let event = AccessLogEvent {
                 request_id: log.request_id.clone(),
                 revision_id: log.revision_id.clone(),
@@ -5093,6 +5203,7 @@ pub mod snapshot_http {
         accepted_at: Instant,
         access_log: Option<AccessLogDraft>,
         close_after_write: bool,
+        close_client_after_response: bool,
         pending_upstream_request: Option<Vec<u8>>,
         websocket_requested: bool,
         websocket_response: Vec<u8>,
@@ -5169,8 +5280,12 @@ pub mod snapshot_http {
 
     impl SnapshotMioConnection {
         fn begin_response_framing(&mut self, max_header_bytes: usize, websocket_requested: bool) {
-            self.response_header_sanitizer = (!websocket_requested)
-                .then(|| UpstreamResponseHeaderSanitizer::new(max_header_bytes));
+            self.response_header_sanitizer = (!websocket_requested).then(|| {
+                UpstreamResponseHeaderSanitizer::new(
+                    max_header_bytes,
+                    self.close_client_after_response,
+                )
+            });
             self.response_framing = if websocket_requested {
                 None
             } else if self
@@ -5273,6 +5388,7 @@ pub mod snapshot_http {
 
     #[derive(Debug, Clone)]
     struct AccessLogDraft {
+        started_at: Instant,
         request_id: String,
         revision_id: String,
         route_id: Option<String>,
@@ -5290,6 +5406,17 @@ pub mod snapshot_http {
     ) {
         connection.deadline =
             deadline_for_state(resource_limits, &connection.io.connection.state, now);
+    }
+
+    fn response_with_connection_close(mut response: Vec<u8>) -> Vec<u8> {
+        let Some(header_end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
+            return response;
+        };
+        response.splice(
+            header_end..header_end,
+            b"\r\nConnection: close\r\n".iter().copied(),
+        );
+        response
     }
 
     fn deadline_for_state(
@@ -5593,7 +5720,7 @@ pub mod snapshot_http {
 
         let mut response = Vec::new();
         upstream_stream.read_to_end(&mut response)?;
-        UpstreamResponseHeaderSanitizer::new(limits.max_header_bytes)
+        UpstreamResponseHeaderSanitizer::new(limits.max_header_bytes, true)
             .sanitize(&response)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.message))
     }
@@ -6500,7 +6627,7 @@ pub mod snapshot_http {
         }
 
         #[test]
-        fn completed_client_response_with_empty_buffers_enters_cleanup_terminal() {
+        fn completed_client_response_with_empty_buffers_returns_to_request_reading() {
             let mut runtime = empty_runtime(RuntimeResourcePolicy::default());
             let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -6517,9 +6644,14 @@ pub mod snapshot_http {
 
             runtime.write_client(0, poll.registry()).unwrap();
 
-            assert!(runtime.connections.get(&0).unwrap().close_after_write);
+            let connection = runtime.connections.get(&0).unwrap();
+            assert!(!connection.close_after_write);
+            assert_eq!(
+                connection.io.connection.state,
+                ConnectionState::ReadingClientRequest
+            );
             runtime.cleanup_closed(poll.registry()).unwrap();
-            assert!(runtime.connections.is_empty());
+            assert_eq!(runtime.connections.len(), 1);
         }
 
         #[test]
@@ -8371,6 +8503,7 @@ mod tests {
         assert!(ConnectingUpstream.can_transition_to(&WritingUpstreamRequest));
         assert!(WritingUpstreamRequest.can_transition_to(&ReadingUpstreamResponse));
         assert!(ReadingUpstreamResponse.can_transition_to(&WritingClientResponse));
+        assert!(WritingClientResponse.can_transition_to(&ReadingClientRequest));
         assert!(WritingClientResponse.can_transition_to(&Draining));
         assert!(Draining.can_transition_to(&Closed));
         assert!(ReadingUpstreamResponse.can_transition_to(&TunnelingWebSocket));
@@ -8751,6 +8884,7 @@ mod tests {
     #[test]
     fn http_connection_io_streams_upstream_response_to_client_buffer() {
         let mut io = HttpConnectionIo::new(ConnectionToken::new(15));
+        let limits = HttpLimits::default();
         io.connection.state = ConnectionState::SelectingRoute;
         io.begin_upstream_connect().unwrap();
         io.upstream_connected(vec![b'x']).unwrap();
@@ -8770,6 +8904,27 @@ mod tests {
 
         let remaining = io.client_write_buffer().remaining_len();
         assert_eq!(io.advance_client_write(remaining).unwrap(), remaining);
+        assert_eq!(io.connection.state, ConnectionState::WritingClientResponse);
+        io.finish_client_response(true).unwrap();
+        assert_eq!(io.connection.state, ConnectionState::ReadingClientRequest);
+
+        let next_request = io
+            .receive_client_bytes(b"GET /next HTTP/1.1\r\nHost: example.com\r\n\r\n", &limits)
+            .unwrap();
+        assert!(matches!(next_request, RequestReadOutcome::Complete(_)));
+        assert_eq!(io.connection.state, ConnectionState::SelectingRoute);
+    }
+
+    #[test]
+    fn http_connection_io_drains_when_the_client_does_not_keep_alive() {
+        let mut io = HttpConnectionIo::new(ConnectionToken::new(150));
+        io.connection.state = ConnectionState::SelectingRoute;
+        io.queue_client_response(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec())
+            .unwrap();
+
+        let remaining = io.client_write_buffer().remaining_len();
+        assert_eq!(io.advance_client_write(remaining).unwrap(), remaining);
+        io.finish_client_response(false).unwrap();
         assert_eq!(io.connection.state, ConnectionState::Draining);
     }
 
@@ -12527,10 +12682,7 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\nConnection: keep-alive\r\n\r\n",
         );
 
-        assert_eq!(
-            response,
-            b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\nConnection: close\r\n\r\n"
-        );
+        assert_eq!(response, b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\n");
         assert!(upstream_request.starts_with("HEAD / HTTP/1.1\r\n"));
         assert_eq!(
             resource_events.last(),
@@ -12557,7 +12709,7 @@ mod tests {
         assert!(response.contains("Content-Length: 2\r\n"));
         assert!(response.contains("ETag: stable\r\n"));
         assert!(response.ends_with("\r\n\r\nok"));
-        assert!(response.contains("Connection: close\r\n"));
+        assert!(!response.contains("Connection:"));
         for header in ["X-Upstream-Hop:", "Proxy-Connection:", "Keep-Alive:"] {
             assert!(
                 !response.contains(header),

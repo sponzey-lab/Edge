@@ -54,6 +54,7 @@ impl Connection {
             (WritingUpstreamRequest, UpstreamWritable) => ReadingUpstreamResponse,
             (ReadingUpstreamResponse, UpstreamReadable) => WritingClientResponse,
             (ReadingUpstreamResponse, RouteSelected(WebSocketTunnel)) => TunnelingWebSocket,
+            (WritingClientResponse, ClientResponseCompleted) => ReadingClientRequest,
             (WritingClientResponse, ClientWritable) => Draining,
             (Draining, UpstreamClosed) => Closed,
             _ => {
@@ -212,16 +213,29 @@ impl HttpConnectionIo {
             return Err(invalid_connection_io_state());
         }
         let advanced = self.client_write.advance(byte_count);
-        if self.connection.state == ConnectionState::WritingClientResponse
-            && self.client_write.is_complete()
-        {
-            self.connection
-                .handle_event(ConnectionEvent::ClientWritable)?;
-        }
         if self.client_write.is_complete() {
             self.client_write.clear_if_complete();
         }
         Ok(advanced)
+    }
+
+    pub fn finish_client_response(&mut self, keep_alive: bool) -> Result<(), AppError> {
+        if self.connection.state != ConnectionState::WritingClientResponse
+            || !self.client_write.is_complete()
+        {
+            return Err(invalid_connection_io_state());
+        }
+
+        if keep_alive {
+            self.connection
+                .handle_event(ConnectionEvent::ClientResponseCompleted)?;
+            self.upstream_attempt = UpstreamAttemptProgress::default();
+            self.upstream_write = WriteBuffer::default();
+        } else {
+            self.connection
+                .handle_event(ConnectionEvent::ClientWritable)?;
+        }
+        Ok(())
     }
 
     pub fn upstream_write_buffer(&self) -> &WriteBuffer {

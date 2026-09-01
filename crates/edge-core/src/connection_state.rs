@@ -36,6 +36,7 @@ impl ConnectionState {
                 | (WritingUpstreamRequest, WritingClientResponse)
                 | (ReadingUpstreamResponse, WritingClientResponse)
                 | (ReadingUpstreamResponse, TunnelingWebSocket)
+                | (WritingClientResponse, ReadingClientRequest)
                 | (WritingClientResponse, Draining)
                 | (TunnelingWebSocket, Draining)
                 | (_, Closed)
@@ -97,6 +98,7 @@ pub enum RouteSelectionTarget {
 pub enum ConnectionEvent {
     ClientReadable,
     ClientWritable,
+    ClientResponseCompleted,
     UpstreamConnectReady,
     UpstreamTlsHandshakeStarted,
     UpstreamTlsEstablished,

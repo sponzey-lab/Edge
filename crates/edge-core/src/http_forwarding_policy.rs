@@ -9,22 +9,23 @@ use crate::{Header, HttpRequest};
 /// The snapshot runtime validates response framing before passing bytes here.
 /// This adapter removes response hop-by-hop fields without buffering the body.
 /// `Transfer-Encoding` remains because the runtime forwards the already-framed
-/// chunk stream rather than decoding and re-encoding it. The current runtime
-/// closes every non-upgrade client connection after its final response, so the
-/// projected final header explicitly advertises `Connection: close`; otherwise
-/// an HTTP/1.1 client can reuse a connection the runtime has already closed.
+/// chunk stream rather than decoding and re-encoding it. The runtime chooses
+/// whether the final response closes the client connection for each request,
+/// so this adapter emits `Connection: close` only when instructed to do so.
 #[derive(Debug)]
 pub(crate) struct UpstreamResponseHeaderSanitizer {
     headers: Vec<u8>,
     max_header_bytes: usize,
+    close_final_response: bool,
     forwarding_body: bool,
 }
 
 impl UpstreamResponseHeaderSanitizer {
-    pub(crate) fn new(max_header_bytes: usize) -> Self {
+    pub(crate) fn new(max_header_bytes: usize, close_final_response: bool) -> Self {
         Self {
             headers: Vec::new(),
             max_header_bytes,
+            close_final_response,
             forwarding_body: false,
         }
     }
@@ -57,7 +58,8 @@ impl UpstreamResponseHeaderSanitizer {
                 continue;
             }
 
-            let (sanitized, interim) = sanitize_response_header_block(&self.headers)?;
+            let (sanitized, interim) =
+                sanitize_response_header_block(&self.headers, self.close_final_response)?;
             output.try_reserve(sanitized.len()).map_err(|_| {
                 response_header_error(
                     ErrorCode::ResourceAllocationFailed,
@@ -82,7 +84,10 @@ impl UpstreamResponseHeaderSanitizer {
     }
 }
 
-fn sanitize_response_header_block(headers: &[u8]) -> Result<(Vec<u8>, bool), AppError> {
+fn sanitize_response_header_block(
+    headers: &[u8],
+    close_final_response: bool,
+) -> Result<(Vec<u8>, bool), AppError> {
     let header_text = std::str::from_utf8(headers).map_err(|_| {
         response_header_error(
             ErrorCode::RuntimeUpstreamBadGateway,
@@ -143,7 +148,7 @@ fn sanitize_response_header_block(headers: &[u8]) -> Result<(Vec<u8>, bool), App
         sanitized.push_str(&header.value);
         sanitized.push_str("\r\n");
     }
-    if !interim {
+    if !interim && close_final_response {
         sanitized.push_str("Connection: close\r\n");
     }
     sanitized.push_str("\r\n");
@@ -271,7 +276,7 @@ mod tests {
 
     #[test]
     fn response_header_sanitizer_removes_hop_headers_across_fragments_and_interim() {
-        let mut sanitizer = UpstreamResponseHeaderSanitizer::new(1024);
+        let mut sanitizer = UpstreamResponseHeaderSanitizer::new(1024, true);
 
         assert_eq!(
             sanitizer

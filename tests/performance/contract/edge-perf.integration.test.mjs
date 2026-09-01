@@ -89,7 +89,7 @@ test("release edge-perf proxies the fixed Host route to node-upstream", { concur
   assert.equal(output, "200:sponzey-edge-small-payload-v1\n");
 });
 
-test("release edge-perf advertises final-response connection close before terminating a POST socket", { concurrency: false }, () => {
+test("release edge-perf reuses one HTTP/1.1 client socket after a POST response", { concurrency: false }, () => {
   prepareRuntime();
   startPerformanceServices();
 
@@ -100,16 +100,14 @@ test("release edge-perf advertises final-response connection close before termin
     "node",
     "-e",
     [
-      "const http = require('node:http');",
+      "const http = require('node:http'); const agent = new http.Agent({keepAlive:true,maxSockets:1}); const ports = [];",
       "const body = 'edge-request-body-v1';",
-      "const request = http.request({host:'172.30.0.2',port:8080,path:'/inspect/body',method:'POST',headers:{Host:'edge.test','content-type':'text/plain','content-length':Buffer.byteLength(body)}}, response => {",
-      "let payload = ''; response.on('data', chunk => { payload += chunk; });",
-      "response.on('end', () => { process.stdout.write(`${response.statusCode}:${response.headers.connection}:${JSON.parse(payload).digest}`); });",
-      "}); request.on('error', error => { process.stderr.write(error.message); process.exitCode = 1; }); request.end(body);",
+      "const send = (options, payload) => new Promise((resolve,reject) => { const request = http.request({...options,agent}, response => { let responseBody=''; response.on('data', chunk => { responseBody += chunk; }); response.on('end', () => resolve({status:response.statusCode,connection:response.headers.connection,body:responseBody})); }); request.on('socket', socket => ports.push(socket.localPort)); request.on('error', reject); request.end(payload); });",
+      "(async () => { try { const first = await send({host:'172.30.0.2',port:8080,path:'/inspect/body',method:'POST',headers:{Host:'edge.test','content-type':'text/plain','content-length':Buffer.byteLength(body)}}, body); const second = await send({host:'172.30.0.2',port:8080,path:'/payload/small',headers:{Host:'edge.test'}}); process.stdout.write(`${first.status}:${first.connection ?? 'persistent'}:${JSON.parse(first.body).digest}:${second.status}:${second.body}:${ports[0] === ports[1]}`); } catch (error) { process.stderr.write(error.message); process.exitCode=1; } finally { agent.destroy(); } })();",
     ].join(""),
   );
 
-  assert.equal(output, "200:close:sha256:bfcb757022c48360ee7ffe74943b9cc7a973e98f4b55732d86021ce1493a4ea3");
+  assert.equal(output, "200:persistent:sha256:bfcb757022c48360ee7ffe74943b9cc7a973e98f4b55732d86021ce1493a4ea3:200:sponzey-edge-small-payload-v1\n:true");
 });
 
 test("release edge-perf rejects malformed framing and oversized declared bodies before upstream use", { concurrency: false }, () => {
