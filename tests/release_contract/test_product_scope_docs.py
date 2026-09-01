@@ -109,6 +109,21 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
         self.assertIn('rust:1.94.0-bookworm cargo', helper)
         self.assertIn('docker run --rm', helper)
 
+    def test_memory_adapters_have_a_portable_fail_closed_search_fallback(self) -> None:
+        helper = (ROOT / "scripts" / "test_cargo.sh").read_text(encoding="utf-8")
+        scripts_with_search = [
+            ROOT / "scripts" / "collect_memory_evidence_aggregate.sh",
+            ROOT / "scripts" / "collect_memory_evidence_manifest.sh",
+            *sorted((ROOT / "scripts").glob("smoke_*memory*.sh")),
+        ]
+
+        self.assertIn('if ! command -v rg >/dev/null 2>&1; then', helper)
+        self.assertIn('rg() {', helper)
+        self.assertIn('grep "$@"', helper)
+        for script in scripts_with_search:
+            if "rg " in script.read_text(encoding="utf-8"):
+                self.assertIn('. ./scripts/test_cargo.sh', script.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
