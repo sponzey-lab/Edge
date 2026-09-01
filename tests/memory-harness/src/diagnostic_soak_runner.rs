@@ -123,7 +123,11 @@ where
             let request = SoakWindowRequest::new(index, target, self.identity.clone())?;
             let observation = match self.executor.execute(request) {
                 Ok(value) => value,
-                Err(_) => return self.fail("diagnostic soak window execution failed"),
+                Err(error) => {
+                    return self.fail(&format!(
+                        "diagnostic soak window execution failed at index {index}: {error}"
+                    ));
+                }
             };
             observations.push(observation);
         }

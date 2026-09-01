@@ -48,7 +48,8 @@ fn window_failure_and_reuse_are_terminal() {
         FakeExecutor::fail_at(20),
         identity(),
     );
-    assert!(failed.run().is_err());
+    let error = failed.run().unwrap_err();
+    assert!(error.to_string().contains("fake window failure"));
     assert_eq!(failed.state(), DiagnosticSoakRunnerState::Failed);
 
     let mut completed =
