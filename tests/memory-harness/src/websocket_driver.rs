@@ -134,6 +134,10 @@ pub fn encode_masked_client_frame(payload: &[u8]) -> Result<Vec<u8>, HarnessErro
     encode_masked_frame(0x2, payload)
 }
 
+pub fn encode_masked_text_frame(payload: &[u8]) -> Result<Vec<u8>, HarnessError> {
+    encode_masked_frame(0x1, payload)
+}
+
 fn encode_masked_frame(opcode: u8, payload: &[u8]) -> Result<Vec<u8>, HarnessError> {
     let length = u8::try_from(payload.len())
         .ok()
@@ -302,7 +306,7 @@ fn open_verified_tunnel(
     }
     let payload = b"edge-websocket-probe";
     stream
-        .write_all(&encode_masked_client_frame(payload)?)
+        .write_all(&encode_masked_text_frame(payload)?)
         .map_err(|_| HarnessError::new("WebSocket probe write failed"))?;
     let mut frame_header = [0_u8; 2];
     stream

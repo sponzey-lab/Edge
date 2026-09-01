@@ -1,6 +1,6 @@
 use edge_memory_harness::websocket_driver::{
-    decode_server_frame, encode_masked_client_frame, parse_websocket_options,
-    websocket_upgrade_request, WebSocketLifecycle, WebSocketState,
+    decode_server_frame, encode_masked_client_frame, encode_masked_text_frame,
+    parse_websocket_options, websocket_upgrade_request, WebSocketLifecycle, WebSocketState,
 };
 
 #[test]
@@ -19,6 +19,8 @@ fn lifecycle_progresses_to_128_and_releases_exactly() {
 fn bounded_frame_codec_masks_clients_and_accepts_only_complete_server_frames() {
     let encoded = encode_masked_client_frame(b"ping").unwrap();
     assert_eq!(&encoded[..6], &[0x82, 0x84, 0x11, 0x22, 0x33, 0x44]);
+    let text = encode_masked_text_frame(b"ping").unwrap();
+    assert_eq!(&text[..6], &[0x81, 0x84, 0x11, 0x22, 0x33, 0x44]);
     assert_eq!(decode_server_frame(b"\x82\x04pong", 16).unwrap(), b"pong");
 
     assert!(decode_server_frame(b"\x82\x84\0\0\0\0pong", 16).is_err());
