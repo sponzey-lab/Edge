@@ -26,16 +26,8 @@ source_identity_hash_stdin() {
 }
 
 source_identity_file_list() {
-  find . \
-    \( \
-      -path './.git' -o \
-      -path './.sponzey' -o \
-      -path './.tasks' -o \
-      -path './artifacts' -o \
-      -name target -o \
-      -name node_modules \
-    \) -prune -o \
-    -type f ! -name '.DS_Store' -print |
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  git ls-files --cached --others --exclude-standard |
     LC_ALL=C sort
 }
 

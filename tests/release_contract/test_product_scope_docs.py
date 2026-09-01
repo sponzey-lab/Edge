@@ -82,6 +82,12 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
                 self.assertTrue(script.stat().st_mode & 0o111)
                 self.assertIn(target, script.read_text(encoding="utf-8"))
 
+    def test_phase011_source_identity_ignores_local_secret_and_artifact_paths(self) -> None:
+        identity = (ROOT / "scripts" / "source_identity.sh").read_text(encoding="utf-8")
+
+        self.assertIn("git ls-files --cached --others --exclude-standard", identity)
+        self.assertNotIn("find .", identity)
+
 
 if __name__ == "__main__":
     unittest.main()
