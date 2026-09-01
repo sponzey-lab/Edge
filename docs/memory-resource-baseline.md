@@ -473,6 +473,11 @@ and plateau checks pass.
 cycles. It publishes `connection-churn-50k-v1.json` only after every cycle reaches 0/0 normal
 cleanup and the source identity, ceiling, plateau, stale-identity, and tamper checks pass.
 
+`scripts/smoke_private_https_idle_capacity.sh` creates ephemeral private PKI, holds exactly 512
+trusted TLS connections, then validates 0/0 normal cleanup and an HTTPS recovery request. It
+publishes `private-https-idle-512-v2.json` only after the report/digest and secret-free artifact
+checks pass.
+
 ## Task 051 Canonical Slow Request Capacity Contract
 
 `CanonicalSlowRequestProfile` fixes slow-header at 256 connections and slow-body at 128 connections.
