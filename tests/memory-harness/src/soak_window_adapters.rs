@@ -13,7 +13,7 @@ use crate::soak_window::{
     SoakWindowCleanup, SoakWindowLoadPort, SoakWindowLoadResult, SoakWindowProcessPort,
     SoakWindowRuntimePort,
 };
-use crate::websocket_driver::run_websocket_lifecycles;
+use crate::websocket_driver::run_websocket_lifecycles_for_host;
 use crate::HarnessError;
 
 pub struct SystemSoakSchedule {
@@ -125,8 +125,9 @@ impl SoakWindowLoadPort for DriverSoakWindowLoad {
                 })
             }
             SoakWorkload::Websocket if expected == 128 => {
-                let released = run_websocket_lifecycles(
+                let released = run_websocket_lifecycles_for_host(
                     self.websocket_address,
+                    &self.host,
                     128,
                     self.timeout,
                     self.max_websocket_header_bytes,

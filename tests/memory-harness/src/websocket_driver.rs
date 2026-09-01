@@ -10,7 +10,6 @@ use crate::bounded_net::connect_with_deadline;
 use crate::HarnessError;
 
 const CLIENT_MASK: [u8; 4] = [0x11, 0x22, 0x33, 0x44];
-const UPGRADE_REQUEST: &[u8] = b"GET /ws HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebSocketState {
@@ -176,6 +175,7 @@ pub fn run_websocket_driver(options: WebSocketOptions) -> Result<String, Harness
     let timeout = Duration::from_millis(options.timeout_ms);
     let (mut lifecycle, mut sessions) = open_verified_sessions(
         options.address,
+        "localhost",
         options.connections,
         timeout,
         options.max_header_bytes,
@@ -202,18 +202,39 @@ pub fn run_websocket_lifecycles(
     timeout: Duration,
     max_header_bytes: usize,
 ) -> Result<usize, HarnessError> {
+    run_websocket_lifecycles_for_host(address, "localhost", connections, timeout, max_header_bytes)
+}
+
+pub fn run_websocket_lifecycles_for_host(
+    address: SocketAddr,
+    host: &str,
+    connections: usize,
+    timeout: Duration,
+    max_header_bytes: usize,
+) -> Result<usize, HarnessError> {
     if timeout.is_zero() || max_header_bytes == 0 {
         return Err(HarnessError::new(
             "WebSocket lifecycle specification is invalid",
         ));
     }
     let (mut lifecycle, mut sessions) =
-        open_verified_sessions(address, connections, timeout, max_header_bytes)?;
+        open_verified_sessions(address, host, connections, timeout, max_header_bytes)?;
     release_verified_sessions(&mut lifecycle, &mut sessions)
+}
+
+pub fn websocket_upgrade_request(host: &str) -> Result<Vec<u8>, HarnessError> {
+    if host.is_empty() || host.contains(['\r', '\n']) {
+        return Err(HarnessError::new("WebSocket upgrade host is invalid"));
+    }
+    Ok(format!(
+        "GET /ws HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    )
+    .into_bytes())
 }
 
 fn open_verified_sessions(
     address: SocketAddr,
+    host: &str,
     connections: usize,
     timeout: Duration,
     max_header_bytes: usize,
@@ -228,7 +249,12 @@ fn open_verified_sessions(
             continue;
         }
         while sessions.len() < target {
-            sessions.push(open_verified_tunnel(address, timeout, max_header_bytes)?);
+            sessions.push(open_verified_tunnel(
+                address,
+                host,
+                timeout,
+                max_header_bytes,
+            )?);
         }
         lifecycle.ramp_verified(target, sessions.len())?;
     }
@@ -251,6 +277,7 @@ fn release_verified_sessions(
 
 fn open_verified_tunnel(
     address: SocketAddr,
+    host: &str,
     timeout: Duration,
     max_header_bytes: usize,
 ) -> Result<TcpStream, HarnessError> {
@@ -259,8 +286,9 @@ fn open_verified_tunnel(
         .set_read_timeout(Some(timeout))
         .and_then(|_| stream.set_write_timeout(Some(timeout)))
         .map_err(|_| HarnessError::new("WebSocket timeout config failed"))?;
+    let request = websocket_upgrade_request(host)?;
     stream
-        .write_all(UPGRADE_REQUEST)
+        .write_all(&request)
         .map_err(|_| HarnessError::new("WebSocket upgrade write failed"))?;
     let header = read_header(&mut stream, max_header_bytes)?;
     let header = std::str::from_utf8(&header)

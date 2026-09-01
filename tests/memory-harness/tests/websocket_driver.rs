@@ -1,6 +1,6 @@
 use edge_memory_harness::websocket_driver::{
-    decode_server_frame, encode_masked_client_frame, parse_websocket_options, WebSocketLifecycle,
-    WebSocketState,
+    decode_server_frame, encode_masked_client_frame, parse_websocket_options,
+    websocket_upgrade_request, WebSocketLifecycle, WebSocketState,
 };
 
 #[test]
@@ -26,6 +26,16 @@ fn bounded_frame_codec_masks_clients_and_accepts_only_complete_server_frames() {
     assert!(decode_server_frame(b"\x89\x04pong", 16).is_err());
     assert!(decode_server_frame(b"\x82\x7e\0\x7e", 125).is_err());
     assert!(encode_masked_client_frame(&[0; 126]).is_err());
+}
+
+#[test]
+fn upgrade_request_uses_the_explicit_route_host_and_rejects_injection() {
+    let request = websocket_upgrade_request("edge.test").unwrap();
+    assert!(request
+        .windows(b"Host: edge.test\r\n".len())
+        .any(|line| line == b"Host: edge.test\r\n"));
+    assert!(websocket_upgrade_request("").is_err());
+    assert!(websocket_upgrade_request("edge.test\r\nX-Injected: yes").is_err());
 }
 
 #[test]
