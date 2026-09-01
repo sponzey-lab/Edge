@@ -95,7 +95,8 @@ Check:
 - health interval/timeout, threshold, status range, or path is outside the
   bounds in `docs/config-schema.md`
 - Admin bind conflicts with a listener bind
-- production ACME is enabled without explicit opt-in
+- a deferred certificate-automation field is enabled; current operation supports
+  manual certificates and private PKI only
 
 ## Admin UI Does Not Reach API
 

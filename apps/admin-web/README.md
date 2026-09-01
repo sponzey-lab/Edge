@@ -14,24 +14,24 @@ Files:
 
 - `index.html`: dashboard, auth/setup, proxy host editor, config editor, certificate table, recent logs.
 - `styles.css`: responsive operational UI styling.
-- `app.js`: Admin API client with login, CSRF mutation headers, config lifecycle controls, proxy host CRUD, certificate/log reads, and explicit local fallback for screen smoke checks.
+- `app.js`: Admin API client with login, CSRF mutation headers, config lifecycle controls, proxy host CRUD, manual certificate/log reads, support bundle creation, and explicit local fallback for screen smoke checks.
 
 Local check:
 
-Run:
+Run the current focused TCP/static-asset smoke:
 
 ```bash
-./scripts/smoke_admin_web.sh
-./scripts/smoke_admin_web_live.mjs
+cargo test -p edge-proxy admin_http_listener_serves_static_admin_web_assets_over_tcp
 ```
 
-Open `index.html` directly in a browser for fallback layout checks, or run
-`edge-proxy` with a config file and open the Admin bind URL for same-origin API
-mode. Without a reachable Admin API, the UI enters a visible `UI smoke only`
-mode. Fallback state is only for layout and interaction checks; it is not
-canonical runtime config and must not be treated as applied proxy state.
+For an optional manual layout check, open `index.html` directly in a browser.
+For same-origin API mode, run `edge-proxy` with a valid config file and open the
+loopback Admin bind URL. Without a reachable Admin API, the UI enters a visible
+`UI smoke only` mode. Fallback state is only for layout and interaction checks;
+it is not canonical runtime config and must not be treated as applied proxy
+state. Session/CSRF-protected support-bundle behavior is covered at the bound
+Admin TCP endpoint by:
 
-The live smoke starts a temporary backend, a local `edge-proxy` daemon, and a
-headless Chrome/Chromium instance through the Chrome DevTools Protocol. Set
-`SPONZEY_BROWSER` or `CHROME_BIN` when Chrome is not installed in a default
-location.
+```bash
+cargo test -p edge-proxy support_bundle_endpoint_uses_fixed_paths_and_requires_csrf
+```

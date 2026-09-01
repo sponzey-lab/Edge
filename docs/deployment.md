@@ -232,7 +232,7 @@ data/
 ```
 
 The config-file startup path injects a file-backed `CertificateStore` rooted at
-`data/certs`. Certificate issue/renew writes:
+`data/certs`. Manual certificate import writes:
 
 ```text
 data/certs/{certificate_ref}/fullchain.pem
@@ -288,10 +288,9 @@ import or set the current config revision.
   deferred external Let's Encrypt staging workflow in
   `docs/tls-runtime-next.md`.
 - Admin API status, health, upstream-health, metrics, setup/login/logout, config
-  get/validate/diff/apply/rollback, proxy host CRUD, certificate
-  issue/renew/import through the selected boundary, file-backed certificate
-  status, and recent log endpoints are bound over local TCP by `edge-proxy`
-  during config-file startup.
+  get/validate/diff/apply/rollback, proxy host CRUD, manual certificate import,
+  support bundle creation, file-backed certificate status, and recent log
+  endpoints are bound over local TCP by `edge-proxy` during config-file startup.
 - Data-plane access logs are handed from the snapshot mio runtime to the Admin
   recent access buffer through a bounded nonblocking queue. Data-plane 502/504
   errors are handed to the Admin recent error buffer through the same boundary.

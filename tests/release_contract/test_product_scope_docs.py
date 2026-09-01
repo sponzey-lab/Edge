@@ -41,6 +41,32 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
             self.assertNotIn("SPONZEY_ACME_CLIENT=", document)
             self.assertNotIn("letsencrypt-staging", document)
 
+    def test_current_operating_docs_do_not_claim_deferred_certificate_automation(self) -> None:
+        documents = {
+            "deployment": (ROOT / "docs" / "deployment.md").read_text(encoding="utf-8"),
+            "troubleshooting": (ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8"),
+            "admin_web": (ROOT / "apps" / "admin-web" / "README.md").read_text(encoding="utf-8"),
+        }
+
+        self.assertIn("POST /api/v1/support-bundles", documents["deployment"])
+        self.assertIn("manual certificates and private", documents["deployment"])
+        self.assertIn("UI smoke only", documents["troubleshooting"])
+        self.assertIn("UI smoke only", documents["admin_web"])
+        for name, document in documents.items():
+            with self.subTest(document=name):
+                self.assertNotIn("SPONZEY_ACME_CLIENT=", document)
+                self.assertNotIn("certificate issue/renew", document)
+                self.assertNotIn("production ACME", document)
+
+    def test_admin_web_runbook_uses_current_static_smoke_and_manual_fallback_only(self) -> None:
+        readme = (ROOT / "apps" / "admin-web" / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("cargo test -p edge-proxy admin_http_listener_serves_static_admin_web_assets_over_tcp", readme)
+        self.assertIn("UI smoke only", readme)
+        self.assertIn("never modifies config files directly", readme)
+        self.assertNotIn("./scripts/smoke_admin_web", readme)
+        self.assertNotIn("Chrome DevTools Protocol", readme)
+
     def test_current_operating_commands_do_not_bootstrap_deferred_acme(self) -> None:
         documents = {
             "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
