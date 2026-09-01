@@ -3710,6 +3710,7 @@ pub mod snapshot_http {
             response: Vec<u8>,
         ) -> io::Result<()> {
             let mut runtime_error = None;
+            let response_declares_close = response_declares_connection_close(&response);
             #[cfg(test)]
             let mut response_accounting_changed = false;
             let reregister_result = {
@@ -3718,6 +3719,7 @@ pub mod snapshot_http {
                 let Some(connection) = connections.get_mut(&connection_id) else {
                     return Ok(());
                 };
+                connection.close_client_after_response |= response_declares_close;
                 let response_change = match connection
                     .resource_charges
                     .prepare_client_response_bytes(payload_ledger, connection_id, response.len())
@@ -6055,6 +6057,20 @@ pub mod snapshot_http {
             504 => Some((ErrorCode::RuntimeUpstreamTimeout, "upstream timed out")),
             _ => None,
         }
+    }
+
+    fn response_declares_connection_close(response: &[u8]) -> bool {
+        let Ok(headers) = std::str::from_utf8(response) else {
+            return false;
+        };
+        headers
+            .split("\r\n")
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(name, _)| name.eq_ignore_ascii_case("Connection"))
+            .flat_map(|(_, value)| value.split(','))
+            .any(|value| value.trim().eq_ignore_ascii_case("close"))
     }
 
     fn http_error_response(status: u16, reason: &str) -> Vec<u8> {
@@ -12894,6 +12910,136 @@ mod tests {
         assert!(
             api_request.contains("Host: api.example.test"),
             "upstream request was {api_request:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_uses_one_upstream_connection_per_persistent_client_request() {
+        let (backend_addr, backend) = spawn_text_backend_for_requests("reused", 2);
+        let snapshot = snapshot_for_runtime(
+            vec![route_to_service(
+                "api",
+                "api.example.test",
+                "/",
+                "api-service",
+            )],
+            vec![service_with_upstream("api-service", backend_addr)],
+        );
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default()),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n")
+            .unwrap();
+        let mut first_response = [0_u8; 128];
+        let first_len = client.read(&mut first_response).unwrap();
+        assert!(
+            String::from_utf8_lossy(&first_response[..first_len]).contains("200 OK"),
+            "first response={:?}",
+            &first_response[..first_len]
+        );
+
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: api.example.test\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut second_response = String::new();
+        client.read_to_string(&mut second_response).unwrap();
+
+        runtime_thread.join().unwrap();
+        let requests = backend.join().unwrap();
+        assert!(
+            second_response.contains("200 OK"),
+            "response={second_response:?}"
+        );
+        assert_eq!(requests.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_mio_runtime_physically_closes_persistent_client_after_synthetic_502() {
+        let backend_listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let backend_addr = backend_listener.local_addr().unwrap();
+        let backend = thread::spawn(move || {
+            let (mut stream, _) = backend_listener.accept().unwrap();
+            let mut request = [0_u8; 512];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        });
+        let snapshot = snapshot_for_runtime(
+            vec![route_to_service(
+                "api",
+                "api.example.test",
+                "/",
+                "api-service",
+            )],
+            vec![service_with_upstream("api-service", backend_addr)],
+        );
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime_thread = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default()),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n")
+            .unwrap();
+        let mut first_response = [0_u8; 128];
+        let first_len = client.read(&mut first_response).unwrap();
+        assert!(
+            String::from_utf8_lossy(&first_response[..first_len]).contains("200 OK"),
+            "first response={:?}",
+            &first_response[..first_len]
+        );
+        backend.join().unwrap();
+
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n")
+            .unwrap();
+        let mut error_response = Vec::new();
+        let read_result = client.read_to_end(&mut error_response);
+        let _ = client.shutdown(std::net::Shutdown::Both);
+        runtime_thread.join().unwrap();
+
+        assert!(
+            read_result.is_ok(),
+            "synthetic 502 did not close: {read_result:?}"
+        );
+        let error_response = String::from_utf8_lossy(&error_response);
+        assert!(
+            error_response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
+            "response={error_response:?}"
+        );
+        assert!(
+            error_response.contains("Connection: close\r\n"),
+            "response={error_response:?}"
         );
     }
 
