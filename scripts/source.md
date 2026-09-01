@@ -8,3 +8,4 @@ only source-controlled `edge-memory-harness` binaries and do not alter the produ
 | `run_diagnostic_soak.sh` | Forwards explicit attached-process diagnostics to the fixed two-hour soak runner. | Builds/runs the test harness; CLI rejects missing, duplicate, or unsupported arguments. |
 | `collect_phase011_memory_release.sh` | Forwards explicit evidence paths to the Phase 011 release collector. | Builds/runs the test harness; collection rejects invalid, stale, or unsafe inputs. |
 | `check_phase011_memory_release.sh` | Forwards report validation to the Phase 011 release validator. | Builds/runs the test harness; validation is read-only over the supplied report/digest pair. |
+| `smoke_memory_evidence.sh` | Builds the fixed performance release composition and publishes the idle evidence report/digest. | Requires a Linux Docker host; creates only a caller-named new output directory and removes its dedicated Compose services on exit. |

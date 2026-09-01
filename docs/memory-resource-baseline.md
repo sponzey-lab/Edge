@@ -126,11 +126,12 @@ Task 030 now supplies a small current-host HTTP observation, but the evaluator i
 in a source-bound canonical full-profile report.
 
 Task 028 adds `edge-memory-evidence sample|validate` and
-`scripts/smoke_memory_evidence.sh`. The smoke builds the release proxy, starts it with a temporary
-bootstrap config, waits for the loopback listener, attaches only to that proxy PID, publishes a
-schema v2 report/digest atomically, and invokes validation in a separate process. Stale source
-identity and forbidden-field scans are negative gates, and the trap removes the proxy/temp tree on
-all terminals. The accepted 2026-07-16 current-host macOS arm64 smoke recorded three idle samples,
+`scripts/smoke_memory_evidence.sh <new-output-directory>`. On a Linux Docker host, the smoke
+prepares the fixed private-PKI runtime, builds and starts the performance release composition,
+attaches only to the Edge container PID, publishes a schema v2 report/digest atomically, and invokes
+validation in a separate process. Source identity is a SHA-256 of the tracked Git archive and the
+config digest is computed from the fixed performance configuration. The trap removes only its
+dedicated Compose services on all terminals. The accepted 2026-07-16 current-host macOS arm64 smoke recorded three idle samples,
 all at 9,338,880 bytes RSS, with no missing samples. This short smoke proves Gate C composition,
 not the Phase 011 ceiling, plateau, Linux or load scenarios.
 
