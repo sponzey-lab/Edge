@@ -290,6 +290,9 @@ ordered measured cycles in one proxy and upstream process. Every cycle requires 
 tunnels, at least 8 MiB logical payload, 0/0 normal cleanup, HTTP recovery 200, and a 384 MiB peak
 ceiling. The first cooldown-pair median and last cooldown-pair median use the fixed 16 MiB/10%
 plateau rule. Changed identity, count, payload, cleanup, ceiling, or threshold fails publication.
+The current `scripts/smoke_websocket_memory.sh` entrypoint publishes this canonical
+`websocket-128` report/digest through `edge-websocket-cycles`; it is a local adapter check until
+the required source-bound Linux full-profile evidence is collected.
 
 Task 042 runs the canonical plaintext connection-churn count as five independent cycles of 10,000
 new connect/request/200-response/close operations. The test-tool runner does not begin the next
