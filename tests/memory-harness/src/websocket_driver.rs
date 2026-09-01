@@ -227,7 +227,7 @@ pub fn websocket_upgrade_request(host: &str) -> Result<Vec<u8>, HarnessError> {
         return Err(HarnessError::new("WebSocket upgrade host is invalid"));
     }
     Ok(format!(
-        "GET /ws HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        "GET /ws/echo HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
     )
     .into_bytes())
 }

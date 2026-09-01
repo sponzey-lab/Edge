@@ -31,6 +31,7 @@ fn bounded_frame_codec_masks_clients_and_accepts_only_complete_server_frames() {
 #[test]
 fn upgrade_request_uses_the_explicit_route_host_and_rejects_injection() {
     let request = websocket_upgrade_request("edge.test").unwrap();
+    assert!(request.starts_with(b"GET /ws/echo HTTP/1.1\r\n"));
     assert!(request
         .windows(b"Host: edge.test\r\n".len())
         .any(|line| line == b"Host: edge.test\r\n"));
