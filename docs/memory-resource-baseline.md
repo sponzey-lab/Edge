@@ -357,6 +357,10 @@ the 512 MiB candidate ceiling. The authoritative source/manifest/report identiti
 `artifacts/memory-evidence/task044-current/`; preparation time is not an audit append throughput
 SLO.
 
+The current `scripts/smoke_control_max_memory.sh` entrypoint restores this exact control-max
+contract and canonical `control-max-v1` report/digest publication. Its local adapter result does
+not replace the required source-bound Linux full-profile evidence.
+
 Task 045 runs `http-steady` through `scripts/smoke_http_steady_memory.sh` with 100 test-tool workers
 and exactly 1,000 new plaintext HTTP
 connections per worker. The driver publishes readiness before any request and waits for an explicit

@@ -80,6 +80,7 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
             "scripts/smoke_connection_churn_memory.sh": "edge-connection-churn run",
             "scripts/smoke_private_https_idle_capacity.sh": "private HTTPS idle capacity passed held=512",
             "scripts/smoke_websocket_memory.sh": "edge-websocket-cycles collect",
+            "scripts/smoke_control_max_memory.sh": "edge-control-max hold",
         }
 
         for relative_path, target in expected.items():
