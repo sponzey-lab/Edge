@@ -119,7 +119,7 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
 
         self.assertIn('if ! command -v rg >/dev/null 2>&1; then', helper)
         self.assertIn('rg() {', helper)
-        self.assertIn('grep "$@"', helper)
+        self.assertIn('grep -r "$@"', helper)
         for script in scripts_with_search:
             if "rg " in script.read_text(encoding="utf-8"):
                 self.assertIn('. ./scripts/test_cargo.sh', script.read_text(encoding="utf-8"))

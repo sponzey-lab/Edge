@@ -15,9 +15,10 @@ fi
 
 # The fixed Linux evidence host is intentionally Docker-only. Preserve every adapter's
 # secret-evidence check when ripgrep is absent; all current adapter calls use grep-compatible
-# flags (-n, -i, -q, -c, and -F), so a missing search binary can never turn a failed scan green.
+# flags (-n, -i, -q, -c, and -F). Recursive traversal preserves `rg`'s directory behavior, so a
+# missing search binary can never turn a failed scan green.
 if ! command -v rg >/dev/null 2>&1; then
   rg() {
-    grep "$@"
+    grep -r "$@"
   }
 fi
