@@ -75,6 +75,7 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
             "scripts/collect_memory_evidence_aggregate.sh": "edge-memory-aggregate collect",
             "scripts/smoke_connection_capacity.sh": "connection capacity passed held=1024",
             "scripts/smoke_slow_header_memory.sh": "edge-slow-header-cycles collect",
+            "scripts/smoke_slow_body_memory.sh": "edge-slow-body-cycles collect",
         }
 
         for relative_path, target in expected.items():
