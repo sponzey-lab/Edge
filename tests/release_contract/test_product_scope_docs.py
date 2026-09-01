@@ -27,6 +27,20 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
         self.assertIn("POST /api/v1/support-bundles", korean)
         self.assertIn("private key, secret", korean)
 
+    def test_admin_runbooks_document_the_fixed_support_bundle_and_defer_certificate_automation(self) -> None:
+        api = (ROOT / "docs" / "admin-api.md").read_text(encoding="utf-8")
+        curl = (ROOT / "docs" / "admin-curl.md").read_text(encoding="utf-8")
+
+        self.assertIn("POST /api/v1/support-bundles", api)
+        self.assertIn("fixed allowlist", api)
+        self.assertIn("caller-selected paths", api)
+        self.assertIn("$ADMIN/support-bundles", curl)
+        self.assertIn("X-CSRF-Token", curl)
+        self.assertIn("archive_id", curl)
+        for document in (api, curl):
+            self.assertNotIn("SPONZEY_ACME_CLIENT=", document)
+            self.assertNotIn("letsencrypt-staging", document)
+
     def test_current_operating_commands_do_not_bootstrap_deferred_acme(self) -> None:
         documents = {
             "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),

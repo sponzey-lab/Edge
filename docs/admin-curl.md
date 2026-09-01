@@ -227,42 +227,25 @@ health returns only revision/generation, stable service/upstream ids, and the
 bounded `disabled|unknown|healthy|unhealthy` state; it omits endpoint URLs and
 probe failure detail.
 
-## 11. Issue A Certificate
+## 11. Create A Support Bundle
 
-The automatic MVP gate uses the default fake ACME adapter
-(`SPONZEY_ACME_CLIENT=fake`). External Let's Encrypt staging is deferred to
-Post-MVP work in `docs/acme-staging.md`; start the process with
-`SPONZEY_ACME_CLIENT=letsencrypt-staging` only for that later run. A fake issue
-response uses `source: fake-acme-staging`; real external staging evidence must
-come from a real `letsencrypt_staging` source and pass
-`scripts/check_acme_staging_evidence.sh`.
-Set an explicit request id for certificate issue/renew operations when collecting
-release evidence. For Post-MVP ACME evidence, the same id must be copied to
-ACME staging `metadata.env` `admin_api_request_id`, must match the success response `request_id`, and must match the structured product log `request_id`.
-
-```bash
-export ISSUE_REQUEST_ID=req-cert-issue-demo
-```
+Create a bounded support archive after login. The request accepts no source
+path, artifact list, archive location, service action, or collection bound.
 
 ```bash
 curl -i \
   -b /tmp/sponzey-admin.cookies \
-  -X POST "$ADMIN/certificates/proxy-host-demo/issue" \
-  -H 'Content-Type: application/json' \
-  -H "X-CSRF-Token: $CSRF" \
-  -H "X-Request-Id: $ISSUE_REQUEST_ID" \
-  --data '{
-    "domains":["demo.localhost"],
-    "account_email":"admin@example.com",
-    "production":false,
-    "terms_accepted":false
-  }'
+  -X POST "$ADMIN/support-bundles" \
+  -H "X-CSRF-Token: $CSRF"
 ```
 
-The bound `edge-proxy` path receives the HTTP-01 token/key authorization from
-the selected ACME adapter, serves it through the runtime HTTP listener, verifies
-it through the runtime probe, stores the certificate through `CertificateStore`,
-sends `InstallCertificate`, and clears the token on success or failure.
+The response is a secret-free receipt with `archive_id`, `digest_sha256`,
+`collected_artifacts`, `omitted_artifacts`, and `total_bytes`. It never reveals
+the archive path, private keys, secrets, request/response bodies, authorization
+material, cookies, or full queries. A `401` means login is required, `403`
+means the CSRF token is missing or invalid, and other failures return the stable
+error response. Manual certificates and private PKI are the only supported
+certificate path; certificate automation remains deferred.
 
 ## 12. Delete Proxy Host
 

@@ -61,23 +61,19 @@ Authenticated `GET /api/v1/audit` queries the durable reader port. It defaults
 to 50 records, caps at 100, accepts only exact typed `action`, `outcome`,
 `target_kind`, `from`, `to`, `limit`, and opaque `cursor` parameters, and never
 returns frame hashes, filesystem paths, raw config, payload bodies, or secrets.
-`POST
-/api/v1/certificates/{id}/issue` and `POST /api/v1/certificates/{id}/renew`
-are also bound. They call the application certificate issue/renew use cases
-through `AcmeClient`, `CertificateStore`, and `AuditSink`, then submit
-`InstallCertificate` through `CoreCommandClient` before returning success. In
-the config-file startup path, issue receives an HTTP-01 token/key authorization
-from the selected ACME adapter, registers it in the shared challenge store,
-verifies that token through the runtime HTTP listener, and clears it on success
-or failure. The default automatic-gate adapter is fake and returns
-`fake-acme-staging` or `fake-acme-production` as `source`; these responses must
-not be used as external Let's Encrypt staging evidence. Starting the process
-with `SPONZEY_ACME_CLIENT=letsencrypt-staging` wires the real staging adapter
-for deferred Post-MVP work, which returns `letsencrypt_staging` on success.
-`edge-proxy` injects a
-file-backed `CertificateStore` rooted at `data/certs`, so issued/renewed
-certificates are persisted as `fullchain.pem`, `privkey.pem`, and
-`metadata.toml` under the target certificate ref.
+`POST /api/v1/support-bundles` is an authenticated, CSRF-protected operational
+mutation. It creates a fixed allowlist archive from bootstrap-wired paths only:
+the request does not accept caller-selected paths, artifacts, bounds, service
+actions, or output locations. Its receipt contains only `archive_id`,
+`digest_sha256`, collected/omitted logical artifact names, and `total_bytes`.
+Archive paths, private keys, secrets, request/response bodies, headers,
+cookies, and queries are never returned. Collection failures use the stable
+error response and leave no caller-controlled data path to recover.
+
+Manual certificate import and private PKI are the only supported certificate
+operations. ACME, Let's Encrypt, HTTP-01/DNS-01, issue, renew, and automatic
+certificate lifecycle operations are deferred and are not part of the current
+Admin API operating contract.
 The `edge-proxy` Admin HTTP listener also serves bundled static Admin Web UI
 assets at `/`, `/index.html`, `/styles.css`, and `/app.js`; those assets call
 same-origin `/api/v1/*` and do not bypass the API contract.
@@ -107,9 +103,8 @@ Config/proxy-host mutations additionally require:
   audit, and runtime command acknowledgement
 - `CoreCommandClient` port for runtime changes behind the lifecycle use case
 
-Certificate mutations additionally require:
+Manual certificate import additionally requires:
 
-- ACME input parsed from JSON
 - certificate storage through the `CertificateStore` port
 - `edge-proxy` config-file startup uses the file-backed `CertificateStore`
   rooted at `data/certs`
@@ -164,9 +159,8 @@ PATCH /api/v1/proxy-hosts/{id}
 DELETE /api/v1/proxy-hosts/{id}
 GET  /api/v1/certificates
 GET  /api/v1/certificates/{id}
-POST /api/v1/certificates/{id}/issue
-POST /api/v1/certificates/{id}/renew
 POST /api/v1/certificates/{id}/import
+POST /api/v1/support-bundles
 GET  /api/v1/trust-bundles
 POST /api/v1/trust-bundles
 DELETE /api/v1/trust-bundles/{ref}
@@ -255,9 +249,9 @@ Implemented contract/model coverage today:
   generation/sequence-bound opaque cursor
 - framework-free and bound TCP `GET /api/v1/certificates` list path
 - framework-free and bound TCP `GET /api/v1/certificates/{id}` status path
-- framework-free and bound TCP `POST /api/v1/certificates/{id}/issue` path
-- framework-free and bound TCP `POST /api/v1/certificates/{id}/renew` path
 - framework-free and bound TCP `POST /api/v1/certificates/{id}/import` path
+- framework-free and bound TCP `POST /api/v1/support-bundles` path with a
+  fixed allowlist, bootstrap-wired paths, session, CSRF, and secret-free receipt
 - framework-free and bound TCP trust-bundle import/list/delete paths with
   session, CSRF, body-bound, metadata-only response, and retained-revision guard
 - framework-free and bound TCP `GET /api/v1/logs/access` recent access log path
@@ -412,47 +406,6 @@ Items are sorted by service and upstream identity. `status` is one of
 omits URL, health path, raw failure reason, headers, bodies, and credentials.
 If the runtime health supervisor is unavailable, the endpoint returns the
 stable typed error `RUNTIME_HEALTH_UNAVAILABLE` instead of stale state.
-
-## Certificate Issue and Renew Requests
-
-Issue stores the certificate issue adapter result under the `{id}` path segment
-as the target `CertificateRef`, regardless of the adapter's returned internal
-reference. MVP smoke uses the fake adapter; real Let's Encrypt is deferred.
-
-```json
-{
-  "domains": ["app.example.com"],
-  "account_email": "admin@example.com",
-  "production": false,
-  "terms_accepted": false
-}
-```
-
-Renew reuses the existing stored certificate domains for `{id}` and accepts only
-the ACME account/runtime decision fields:
-
-```json
-{
-  "account_email": "admin@example.com",
-  "production": false,
-  "terms_accepted": false
-}
-```
-
-Successful issue/renew responses include:
-
-```text
-request_id
-certificate_ref
-domains[]
-source
-not_after_epoch_seconds
-commands_sent
-```
-
-The response never includes private key material or certificate PEM.
-On Unix platforms the bound `edge-proxy` file store writes
-`data/certs/{certificate_ref}/privkey.pem` with mode `0600`.
 
 ## Auth Runtime
 
