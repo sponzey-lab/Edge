@@ -451,6 +451,10 @@ The executable steady adapters are `scripts/smoke_http_steady_memory.sh`,
 `scripts/run_three_steady_memory_profiles.sh`. They allocate distinct ephemeral loopback ports as
 one set per scenario so a repeated profile cannot accidentally reuse its own listener address.
 
+The same isolated adapter boundary applies to `scripts/smoke_connection_capacity.sh`: it requires a
+soft file-descriptor limit of at least 4,096, holds exactly 1,024 plaintext HTTP connections, then
+validates both held and released evidence before publishing `held-1024-v2.json`.
+
 ## Task 051 Canonical Slow Request Capacity Contract
 
 `CanonicalSlowRequestProfile` fixes slow-header at 256 connections and slow-body at 128 connections.

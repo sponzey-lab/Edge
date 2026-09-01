@@ -73,6 +73,7 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
             "scripts/run_three_steady_memory_profiles.sh": "./scripts/collect_memory_evidence_aggregate.sh",
             "scripts/collect_memory_evidence_manifest.sh": "edge-memory-manifest collect",
             "scripts/collect_memory_evidence_aggregate.sh": "edge-memory-aggregate collect",
+            "scripts/smoke_connection_capacity.sh": "connection capacity passed held=1024",
         }
 
         for relative_path, target in expected.items():
