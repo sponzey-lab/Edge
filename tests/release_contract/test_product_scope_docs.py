@@ -70,6 +70,9 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
             "scripts/run_diagnostic_soak.sh": "edge-diagnostic-soak-runner",
             "scripts/collect_phase011_memory_release.sh": "edge-phase011-memory-release -- collect",
             "scripts/check_phase011_memory_release.sh": "edge-phase011-memory-release -- validate",
+            "scripts/run_three_steady_memory_profiles.sh": "./scripts/collect_memory_evidence_aggregate.sh",
+            "scripts/collect_memory_evidence_manifest.sh": "edge-memory-manifest collect",
+            "scripts/collect_memory_evidence_aggregate.sh": "edge-memory-aggregate collect",
         }
 
         for relative_path, target in expected.items():

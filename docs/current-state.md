@@ -534,7 +534,9 @@ full Phase 011 scenario profile, and long-soak/deep-diagnostic evidence remain b
 Run `scripts/run_three_steady_memory_profiles.sh <new-artifact-root>` only against an absent output
 root. It reruns HTTP 100,000, private-PKI HTTPS 50,000, and required-mTLS 25,000 three times, checks
 that source identity remains unchanged, then invokes separate collect, validate, and inspect
-processes. Generated artifacts are evidence for that exact source identity only.
+processes. Generated artifacts are evidence for that exact source identity only. The current
+entrypoints publish only `partial` steady-profile evidence: they do not substitute for the remaining
+full-profile scenarios, native Linux x86_64 evidence, long soak, or deep diagnostics.
 
 ## Phase 011 Task 051 Canonical Slow Request Capacity
 

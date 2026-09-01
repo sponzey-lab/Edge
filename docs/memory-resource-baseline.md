@@ -446,6 +446,11 @@ range must be no greater than `max(16 MiB, minimum peak RSS / 10)`. Every run mu
 macOS steady behavior for these three scenarios only. It does not prove Linux behavior, heap or
 kernel hard caps, the full scenario matrix, long-soak stability, or deep leak diagnostics.
 
+The executable steady adapters are `scripts/smoke_http_steady_memory.sh`,
+`scripts/smoke_https_steady_memory.sh`, `scripts/smoke_mtls_steady_memory.sh`, and
+`scripts/run_three_steady_memory_profiles.sh`. They allocate distinct ephemeral loopback ports as
+one set per scenario so a repeated profile cannot accidentally reuse its own listener address.
+
 ## Task 051 Canonical Slow Request Capacity Contract
 
 `CanonicalSlowRequestProfile` fixes slow-header at 256 connections and slow-body at 128 connections.

@@ -8,6 +8,7 @@ mkdir -p "$(dirname -- "$output")"
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
+. ./scripts/source_identity.sh
 mkdir "$output"
 runtime=artifacts/performance/edge-perf-runtime
 cleanup() {
@@ -19,7 +20,7 @@ node tests/performance/bin/prepare-pki-runtime.mjs --output "$runtime"
 docker compose --profile performance -f docker-compose.test.yml up -d --build --wait edge-perf node-upstream
 pid=$(docker inspect --format '{{.State.Pid}}' sponzey-edge-test-edge-perf-1)
 [ "$pid" -gt 0 ] 2>/dev/null || { echo "Edge container PID is unavailable" >&2; exit 1; }
-build_identity="source-tree-sha256:$(git archive --format=tar HEAD | shasum -a 256 | awk '{print $1}')"
+build_identity=$(source_tree_build_id)
 config_sha256=$(shasum -a 256 tests/performance/config/edge-perf.toml | awk '{print $1}')
 run_harness() {
   docker run --rm --pid=host -v "$root:/workspace" -w /workspace rust:1.94.0-bookworm \
