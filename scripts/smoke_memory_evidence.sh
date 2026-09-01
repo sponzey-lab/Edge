@@ -21,11 +21,15 @@ pid=$(docker inspect --format '{{.State.Pid}}' sponzey-edge-test-edge-perf-1)
 [ "$pid" -gt 0 ] 2>/dev/null || { echo "Edge container PID is unavailable" >&2; exit 1; }
 build_identity="source-tree-sha256:$(git archive --format=tar HEAD | shasum -a 256 | awk '{print $1}')"
 config_sha256=$(shasum -a 256 tests/performance/config/edge-perf.toml | awk '{print $1}')
-cargo run -p edge-memory-harness --bin edge-memory-evidence -- sample \
+run_harness() {
+  docker run --rm --pid=host -v "$root:/workspace" -w /workspace rust:1.94.0-bookworm \
+    cargo run -p edge-memory-harness --bin edge-memory-evidence -- "$@"
+}
+run_harness sample \
   --pid "$pid" --scenario idle --scenario-version phase011-idle-v2 \
   --build-identity "$build_identity" --config-sha256 "$config_sha256" \
   --samples 3 --interval-ms 1000 --output "$output/idle-v2.json" --digest-output "$output/idle-v2.sha256"
-cargo run -p edge-memory-harness --bin edge-memory-evidence -- validate \
+run_harness validate \
   --scenario idle --scenario-version phase011-idle-v2 \
   --build-identity "$build_identity" --config-sha256 "$config_sha256" \
   --report "$output/idle-v2.json" --digest "$output/idle-v2.sha256"
