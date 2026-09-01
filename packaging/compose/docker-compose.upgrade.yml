@@ -1,8 +1,11 @@
 services:
   edge:
     # The normal service remains non-root. This short-lived backup operation
-    # reads the root-owned, owner-only passphrase through the fixed bind mount.
+    # reads the root-owned, owner-only passphrase through the fixed bind mount
+    # and must open the edge-owned exclusive data-directory lock.
     user: "0:0"
+    cap_add:
+      - DAC_OVERRIDE
     volumes:
       - type: bind
         source: /run/secrets/sponzey-edge-upgrade-passphrase

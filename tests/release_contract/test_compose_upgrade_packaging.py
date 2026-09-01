@@ -53,6 +53,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
     def test_upgrade_override_runs_only_the_backup_operation_as_root_for_owner_only_secret_access(self) -> None:
         upgrade_override = (self.directory / "docker-compose.upgrade.yml").read_text(encoding="utf-8")
         self.assertIn('user: "0:0"', upgrade_override)
+        self.assertIn("cap_add:\n      - DAC_OVERRIDE", upgrade_override)
         self.assertIn("/run/secrets/sponzey-edge-upgrade-passphrase", upgrade_override)
 
     def test_helper_requires_the_fixed_project_and_compose_file_without_docker_socket(self) -> None:
