@@ -464,6 +464,11 @@ check succeeds.
 declared and 32,768 transmitted bytes per connection. It publishes `slow-body-5cycle-v1.json` only
 after the 4MiB minimum held payload, cleanup, recovery, source identity, and plateau checks pass.
 
+`scripts/smoke_slow_response_memory.sh` runs five exact 128-connection cycles against a test-only
+4MiB response fixture while clients retain only a 4KiB receive buffer. It publishes
+`slow-response-5cycle-v1.json` only after its 8MiB held-payload, cleanup, recovery, source identity,
+and plateau checks pass.
+
 ## Task 051 Canonical Slow Request Capacity Contract
 
 `CanonicalSlowRequestProfile` fixes slow-header at 256 connections and slow-body at 128 connections.
