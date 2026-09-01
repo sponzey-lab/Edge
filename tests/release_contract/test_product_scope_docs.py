@@ -102,6 +102,7 @@ class ProductScopeDocumentationContractTest(unittest.TestCase):
         self.assertIn('-v "$output_parent:/evidence"', idle)
         self.assertIn('"/evidence/$output_name/idle-v2.json"', idle)
         self.assertIn('node:22.14.0-bookworm', idle)
+        self.assertIn('SPONZEY_PERFORMANCE_DASHBOARD_PORT="$dashboard_port"', idle)
 
 
 if __name__ == "__main__":

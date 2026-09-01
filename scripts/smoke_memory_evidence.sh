@@ -13,6 +13,7 @@ cd "$root"
 . ./scripts/source_identity.sh
 mkdir "$output"
 runtime=artifacts/performance/edge-perf-runtime
+dashboard_port=$(python3 -c 'import socket; sock=socket.socket(); sock.bind(("127.0.0.1", 0)); print(sock.getsockname()[1]); sock.close()')
 cleanup() {
   docker compose --profile performance -f docker-compose.test.yml rm -s -f edge-perf node-upstream >/dev/null 2>&1 || true
 }
@@ -23,7 +24,8 @@ prepare_runtime() {
 }
 prepare_runtime --clean --output "$runtime" >/dev/null 2>&1 || true
 prepare_runtime --output "$runtime"
-docker compose --profile performance -f docker-compose.test.yml up -d --build --wait edge-perf node-upstream
+SPONZEY_PERFORMANCE_DASHBOARD_PORT="$dashboard_port" \
+  docker compose --profile performance -f docker-compose.test.yml up -d --build --wait edge-perf node-upstream
 pid=$(docker inspect --format '{{.State.Pid}}' sponzey-edge-test-edge-perf-1)
 [ "$pid" -gt 0 ] 2>/dev/null || { echo "Edge container PID is unavailable" >&2; exit 1; }
 build_identity=$(source_tree_build_id)
