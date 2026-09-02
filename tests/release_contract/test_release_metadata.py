@@ -11,12 +11,15 @@ CANONICAL_REPOSITORY = "https://github.com/sponzey-lab/Sponzey-Edge"
 
 
 class ReleaseMetadataContractTest(unittest.TestCase):
-    def test_current_compose_upgrade_and_keep_alive_repair_candidate_metadata_is_v010_before_tagging(self) -> None:
+    def test_current_corrective_candidate_metadata_is_v011_before_tagging(self) -> None:
         manifest = (ROOT / "apps" / "edge-proxy" / "Cargo.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "0.0.10"', manifest)
+        self.assertIn('version = "0.1.1"', manifest)
         current_state = (ROOT / "docs" / "current-state.md").read_text(encoding="utf-8")
-        self.assertIn("v0.0.10 candidate metadata", current_state)
-        self.assertIn("no tag or published artifact", current_state)
+        self.assertIn("v0.1.1 candidate metadata", current_state)
+        self.assertIn("but has no `v0.1.1` tag", current_state)
+        self.assertIn("or published artifact", current_state)
+        self.assertIn("The `v0.1.0` tag is", current_state)
+        self.assertIn("immutable but non-releasable", current_state)
 
     def make_workspace(
         self,

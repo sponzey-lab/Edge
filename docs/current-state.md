@@ -24,10 +24,13 @@ complete the clean-host deployment matrix. The public `v0.0.6` prerelease adds t
 read-only canonical primary-config mount and first-install preservation behavior, but its
 operator documentation omits the required fixed `runtime.env` Compose input. The public `v0.0.7`
 prerelease corrects that command, but its root-only Compose backup override lacks the minimum
-capability required to open the edge-owned data lock after `cap_drop: ALL`. The current tree
-carries `v0.0.10 candidate metadata`, but has no tag or published artifact. It retains only
-`DAC_OVERRIDE` in the short-lived root override. The unpublished v0.0.9 source correctly
-declared its closing responses but lost enough throughput to fail C8; v0.0.10 instead supports
+capability required to open the edge-owned data lock after `cap_drop: ALL`. The `v0.1.0` tag is
+immutable but non-releasable: its workflow correctly rejected the tagged version because the
+executable package still declared `0.0.10`, and consequently it has no prerelease artifact or
+published image. The current tree carries `v0.1.1 candidate metadata`, but has no `v0.1.1` tag
+or published artifact. It retains only `DAC_OVERRIDE` in the short-lived root override. The
+unpublished v0.0.9 source correctly declared its closing responses but lost enough throughput to
+fail C8; v0.0.10 instead supports
 one-at-a-time plaintext HTTP/1.1 client keep-alive after a fully flushed response, while still
 honoring an explicit client `Connection: close` and preserving TLS close-notify behavior. Its
 source-level contracts do not replace the required
