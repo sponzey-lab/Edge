@@ -17,7 +17,7 @@ install -o root -g root -m 0644 "$package_dir/docker-compose.yml" /etc/sponzey-e
 install -o root -g root -m 0644 "$package_dir/docker-compose.upgrade.yml" /etc/sponzey-edge/compose/docker-compose.upgrade.yml
 [ -e "$config_target" ] || install -o root -g root -m 0644 "$release_root/current.toml" "$config_target"
 umask 077
-printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\n' "$2" "$digest" > /etc/sponzey-edge/compose/runtime.env.tmp
+printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s@sha256:%s\n' "$2" "$digest" "$2" "$digest" > /etc/sponzey-edge/compose/runtime.env.tmp
 chmod 0644 /etc/sponzey-edge/compose/runtime.env.tmp
 mv /etc/sponzey-edge/compose/runtime.env.tmp /etc/sponzey-edge/compose/runtime.env
 install -o root -g root -m 0755 "$package_dir/compose-upgrade-helper" /usr/local/libexec/sponzey-edge/compose-upgrade-helper

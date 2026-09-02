@@ -170,11 +170,31 @@ container; choose an available listener bind in it before the first `up`, and
 use the validated config lifecycle rather than editing it during a running
 process.
 
-For a manual offline Compose upgrade, provide a root-owned image artifact and
-an owner-only root-owned passphrase file. The fixed upgrade-only Compose
-override runs its short-lived backup/verify command as root solely to read that
-mount; normal serving remains non-root. The deployment kind is required so the
-maintenance CLI cannot select a service-manager helper implicitly:
+For a manual offline Compose upgrade, first verify and extract the target release
+archive, then use its `compose/prepare-upgrade.sh` to replace only the fixed
+Compose control-plane files. It does not change the active runtime manifest,
+primary config, or data. Create the artifact from the exact public tag and
+digest, then save the tag after it has been bound to that digest. Docker does
+not preserve an OCI index `RepoDigest` across `image save`/`image load`, so
+saving the bare digest reference is not a valid offline artifact.
+
+```bash
+IMAGE=ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:RELEASE_MANIFEST_IMAGE_SHA256
+sudo docker pull "$IMAGE"
+sudo docker tag "$IMAGE" ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z
+sudo docker image save ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z \
+  --output /root/sponzey-edge-image.tar
+sudo ./compose/prepare-upgrade.sh
+```
+
+Provide that root-owned, non-writable tagged image artifact and an owner-only
+root-owned passphrase file. The fixed helper records the requested digest in
+the upgrade journal, loads the artifact without a network pull, and requires
+the fixed tag's OCI version label to equal `vX.Y.Z` plus a valid revision label
+before it stages the local tag. The fixed upgrade-only Compose override runs
+its short-lived backup/verify command as root solely to read that mount; normal
+serving remains non-root. The deployment kind is required so the maintenance
+CLI cannot select a service-manager helper implicitly:
 
 ```bash
 sudo ./edge-proxy upgrade \
@@ -186,7 +206,9 @@ sudo ./edge-proxy upgrade \
   --passphrase-file /run/secrets/sponzey-edge-upgrade-passphrase
 ```
 
-`compose/install.sh` installs the service and its fixed helper, not the host
+`compose/install.sh` installs the service and its fixed helper; the target
+archive's `compose/prepare-upgrade.sh` is the explicit control-plane migration
+step for an older Compose installation. Neither script installs the host
 maintenance CLI. Keep the verified release archive available and invoke its
 top-level `./edge-proxy` binary as above. If a recorded operation requires
 recovery, run `./edge-proxy upgrade recover`

@@ -11,9 +11,8 @@ class ComposePackagingContractTest(unittest.TestCase):
         cls.official = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         cls.local = (ROOT / "docker-compose.local.yml").read_text(encoding="utf-8")
 
-    def test_official_compose_requires_an_immutable_ghcr_image_and_host_loopback_admin(self) -> None:
-        self.assertIn("ghcr.io/sponzey-lab/sponzey-edge", self.official)
-        self.assertIn("@sha256:", self.official)
+    def test_official_compose_requires_a_fixed_runtime_image_reference_and_host_loopback_admin(self) -> None:
+        self.assertIn("${SPONZEY_EDGE_IMAGE_REFERENCE:?set the fixed runtime image reference}", self.official)
         self.assertIn("network_mode: host", self.official)
         self.assertIn("SPONZEY_ADMIN_BIND: 127.0.0.1:9443", self.official)
         self.assertNotIn("build:", self.official)

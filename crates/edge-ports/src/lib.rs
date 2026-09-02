@@ -588,6 +588,7 @@ pub trait OfflineUpgradeDeployment {
 pub enum OfflineUpgradeCommand {
     AdmitArtifact {
         artifact_file: String,
+        target_version: String,
         image_digest: String,
     },
     Preflight {

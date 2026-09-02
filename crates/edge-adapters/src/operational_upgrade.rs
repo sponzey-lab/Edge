@@ -188,11 +188,14 @@ fn render_helper_command(command: OfflineUpgradeCommand) -> UpgradeHelperInvocat
     let arguments = match command {
         OfflineUpgradeCommand::AdmitArtifact {
             artifact_file,
+            target_version,
             image_digest,
         } => vec![
             "admit-artifact".to_string(),
             "--input".to_string(),
             artifact_file,
+            "--version".to_string(),
+            target_version,
             "--image-digest".to_string(),
             image_digest,
         ],
@@ -289,6 +292,7 @@ impl<R: OfflineUpgradeCommandRunner> OfflineUpgradeDeployment
             self.runner
                 .run_upgrade_command(OfflineUpgradeCommand::AdmitArtifact {
                     artifact_file: request.artifact_file.clone(),
+                    target_version: request.target_version.clone(),
                     image_digest: request.image_digest.clone(),
                 })?,
         )
@@ -600,6 +604,7 @@ mod tests {
             vec![
                 OfflineUpgradeCommand::AdmitArtifact {
                     artifact_file: "/root/edge-proxy-1.2.3".to_string(),
+                    target_version: "v1.2.3".to_string(),
                     image_digest: "b".repeat(64),
                 },
                 OfflineUpgradeCommand::Preflight {
@@ -630,6 +635,7 @@ mod tests {
         runner
             .run_upgrade_command(OfflineUpgradeCommand::AdmitArtifact {
                 artifact_file: "/root/edge-proxy-1.2.3".to_string(),
+                target_version: "v1.2.3".to_string(),
                 image_digest: "b".repeat(64),
             })
             .unwrap();
@@ -657,6 +663,8 @@ mod tests {
                         "admit-artifact".to_string(),
                         "--input".to_string(),
                         "/root/edge-proxy-1.2.3".to_string(),
+                        "--version".to_string(),
+                        "v1.2.3".to_string(),
                         "--image-digest".to_string(),
                         "b".repeat(64),
                     ],

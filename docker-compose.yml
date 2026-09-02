@@ -1,6 +1,6 @@
 services:
   edge:
-    image: ghcr.io/sponzey-lab/sponzey-edge:${SPONZEY_EDGE_TAG:?set a SemVer tag}@sha256:${SPONZEY_EDGE_DIGEST:?set the matching immutable image digest}
+    image: ${SPONZEY_EDGE_IMAGE_REFERENCE:?set the fixed runtime image reference}
     network_mode: host
     restart: unless-stopped
     init: true

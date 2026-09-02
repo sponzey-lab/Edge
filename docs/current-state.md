@@ -31,9 +31,14 @@ published image. The public `v0.1.1` prerelease is also non-releasable: its Linu
 GLIBC_2.39 and cannot run on the supported Ubuntu 22.04 clean host. It remains immutable and must
 not be reused. The immutable `v0.1.2` tag failed before artifact publication because its x86_64
 static-PIE binary did not match an overly narrow `file` output check; it must not be moved or reused.
-The current tree carries `v0.1.3 candidate metadata`, but has no `v0.1.3` tag or published artifact;
-its Linux archive workflow accepts either static or static-PIE `file` output before packaging. It
-retains only `DAC_OVERRIDE` in the short-lived root override. The
+The public `v0.1.3` prerelease has a portable static-PIE Linux archive but its Compose offline
+image admission incorrectly expects Docker `image load` to preserve the published OCI index digest;
+it is therefore not eligible for the clean-host upgrade matrix and remains immutable. The current
+tree carries `v0.1.4 candidate metadata`, but has no `v0.1.4` tag or published artifact; its Linux
+archive workflow accepts either static or static-PIE `file` output before packaging. It retains only
+`DAC_OVERRIDE` in the short-lived root override. Its Compose package keeps first installation pinned
+to tag+digest, while an explicitly prepared offline upgrade validates a root-owned tagged image
+archive's OCI version and revision labels before using the admitted local tag. The
 unpublished v0.0.9 source correctly declared its closing responses but lost enough throughput to
 fail C8; v0.0.10 instead supports
 one-at-a-time plaintext HTTP/1.1 client keep-alive after a fully flushed response, while still

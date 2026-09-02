@@ -14,6 +14,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         cls.directory = ROOT / "packaging" / "compose"
         cls.helper = cls.directory / "compose-upgrade-helper"
         cls.install = cls.directory / "install.sh"
+        cls.prepare = cls.directory / "prepare-upgrade.sh"
         cls.workflow = (ROOT / ".github" / "workflows" / "build-binaries.yml").read_text(
             encoding="utf-8"
         )
@@ -21,10 +22,13 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
     def test_linux_archives_include_fixed_compose_upgrade_assets(self) -> None:
         self.assertTrue(self.helper.is_file())
         self.assertTrue(self.install.is_file())
+        self.assertTrue(self.prepare.is_file())
         self.assertTrue(os.access(self.helper, os.X_OK))
         self.assertTrue(os.access(self.install, os.X_OK))
+        self.assertTrue(os.access(self.prepare, os.X_OK))
         self.assertIn("packaging/compose/compose-upgrade-helper", self.workflow)
         self.assertIn("packaging/compose/install.sh", self.workflow)
+        self.assertIn("packaging/compose/prepare-upgrade.sh", self.workflow)
         self.assertIn("docker-compose.yml dist/compose/docker-compose.yml", self.workflow)
 
     def test_official_compose_reads_only_the_fixed_runtime_image_manifest(self) -> None:
@@ -33,6 +37,14 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         self.assertIn("/etc/sponzey-edge/compose/runtime.env", helper)
         self.assertIn('--env-file "$RUNTIME_ENV_FILE"', helper)
         self.assertIn("runtime.env", installer)
+
+    def test_first_install_uses_an_immutable_reference_but_offline_stage_uses_the_admitted_tag(self) -> None:
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        helper = self.helper.read_text(encoding="utf-8")
+        installer = self.install.read_text(encoding="utf-8")
+        self.assertIn("${SPONZEY_EDGE_IMAGE_REFERENCE:?set the fixed runtime image reference}", compose)
+        self.assertIn('SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s@sha256:%s', installer)
+        self.assertIn('SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s', helper)
 
     def test_official_compose_documentation_uses_the_fixed_runtime_image_manifest(self) -> None:
         for document in ("README.md", "docs/deployment.md", "docs/install.md"):
@@ -66,8 +78,17 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         self.assertNotIn("eval ", source)
 
     def test_shell_assets_are_syntax_valid(self) -> None:
-        for path in [self.helper, self.install]:
+        for path in [self.helper, self.install, self.prepare]:
             subprocess.run(["sh", "-n", str(path)], check=True, cwd=ROOT)
+
+    def test_prepare_upgrade_replaces_only_fixed_control_plane_assets(self) -> None:
+        source = self.prepare.read_text(encoding="utf-8")
+        self.assertIn("Compose upgrade preparation must run as root", source)
+        self.assertIn("/etc/sponzey-edge/compose/docker-compose.yml", source)
+        self.assertIn("/etc/sponzey-edge/compose/docker-compose.upgrade.yml", source)
+        self.assertIn("/usr/local/libexec/sponzey-edge/compose-upgrade-helper", source)
+        self.assertNotIn("runtime.env", source)
+        self.assertNotIn("current.toml", source)
 
     def test_preflight_uses_only_the_fixed_docker_compose_config_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -119,6 +140,12 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                     "config",
                     "--quiet",
                 ],
+            )
+            self.assertEqual(
+                (temporary / "runtime.env.stage").read_text(encoding="utf-8"),
+                "SPONZEY_EDGE_TAG=v1.2.3\n"
+                + "SPONZEY_EDGE_DIGEST=" + "a" * 64 + "\n"
+                + "SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:v1.2.3\n",
             )
 
     def test_preflight_rejects_extra_arguments_before_invoking_docker(self) -> None:
@@ -227,7 +254,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 37)
 
-    def test_admission_loads_only_a_root_owned_artifact_and_checks_requested_digest(self) -> None:
+    def test_admission_loads_only_a_root_owned_tagged_artifact_and_checks_its_release_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
             artifact = temporary / "edge-image.tar"
@@ -238,7 +265,12 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             fake_docker = temporary / "docker"
             fake_docker.write_text(
                 "#!/bin/sh\nprintf '%s ' \"$@\" >> \"$CAPTURE\"\nprintf '\\n' >> \"$CAPTURE\"\n"
-                f"if [ \"$1\" = image ] && [ \"$2\" = inspect ]; then printf '%s\\n' 'ghcr.io/sponzey-lab/sponzey-edge@sha256:{digest}'; fi\n",
+                "if [ \"$1\" = image ] && [ \"$2\" = inspect ]; then\n"
+                "  case \"$4\" in\n"
+                "    *version*) printf '%s\\n' v1.2.3 ;;\n"
+                "    *revision*) printf '%s\\n' 0123456789abcdef0123456789abcdef01234567 ;;\n"
+                "  esac\n"
+                "fi\n",
                 encoding="utf-8",
             )
             fake_docker.chmod(0o755)
@@ -261,6 +293,8 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                     "admit-artifact",
                     "--input",
                     str(artifact),
+                    "--version",
+                    "v1.2.3",
                     "--image-digest",
                     digest,
                 ],
@@ -273,11 +307,12 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                 capture.read_text(encoding="utf-8").splitlines(),
                 [
                     f"image load --input {artifact} ",
-                    f"image inspect --format {{{{range .RepoDigests}}}}{{{{println .}}}}{{{{end}}}} sha256:{digest} ",
+                    "image inspect --format {{ index .Config.Labels \"org.opencontainers.image.version\" }} ghcr.io/sponzey-lab/sponzey-edge:v1.2.3 ",
+                    "image inspect --format {{ index .Config.Labels \"org.opencontainers.image.revision\" }} ghcr.io/sponzey-lab/sponzey-edge:v1.2.3 ",
                 ],
             )
 
-    def test_admission_rejects_symlink_before_docker_and_digest_mismatch_after_load(self) -> None:
+    def test_admission_rejects_symlink_before_docker_and_release_label_mismatch_after_load(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
             artifact = temporary / "edge-image.tar"
@@ -290,7 +325,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             fake_docker.write_text(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = image ] && [ \"$2\" = load ]; then exit 0; fi\n"
-                "printf '%s\\n' 'ghcr.io/sponzey-lab/sponzey-edge@sha256:bbbb'\n",
+                "printf '%s\\n' 'v9.9.9'\n",
                 encoding="utf-8",
             )
             fake_docker.chmod(0o755)
@@ -313,7 +348,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             ]
 
             unsafe = subprocess.run(
-                [*prefix, str(symlink), "--image-digest", digest],
+                [*prefix, str(symlink), "--version", "v1.2.3", "--image-digest", digest],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -322,13 +357,13 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             self.assertIn("artifact input is missing or unsafe", unsafe.stderr)
 
             mismatch = subprocess.run(
-                [*prefix, str(artifact), "--image-digest", digest],
+                [*prefix, str(artifact), "--version", "v1.2.3", "--image-digest", digest],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
             )
             self.assertEqual(mismatch.returncode, 2)
-            self.assertIn("loaded artifact digest mismatch", mismatch.stderr)
+            self.assertIn("loaded artifact version mismatch", mismatch.stderr)
 
     def test_admission_propagates_docker_load_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -358,6 +393,8 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                     "admit-artifact",
                     "--input",
                     str(artifact),
+                    "--version",
+                    "v1.2.3",
                     "--image-digest",
                     "a" * 64,
                 ],
@@ -374,8 +411,8 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             active = temporary / "runtime.env"
             staged = temporary / "runtime.env.stage"
             previous = temporary / "runtime.env.previous"
-            active.write_text("SPONZEY_EDGE_TAG=v1.0.0\nSPONZEY_EDGE_DIGEST=" + "a" * 64 + "\n", encoding="utf-8")
-            staged.write_text("SPONZEY_EDGE_TAG=v1.1.0\nSPONZEY_EDGE_DIGEST=" + "b" * 64 + "\n", encoding="utf-8")
+            active.write_text("SPONZEY_EDGE_TAG=v1.0.0\nSPONZEY_EDGE_DIGEST=" + "a" * 64 + "\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:v1.0.0@sha256:" + "a" * 64 + "\n", encoding="utf-8")
+            staged.write_text("SPONZEY_EDGE_TAG=v1.1.0\nSPONZEY_EDGE_DIGEST=" + "b" * 64 + "\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:v1.1.0\n", encoding="utf-8")
             helper = temporary / "compose-upgrade-helper"
             helper.write_text(
                 self.helper.read_text(encoding="utf-8")

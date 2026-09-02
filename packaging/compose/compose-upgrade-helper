@@ -70,7 +70,7 @@ case "$command" in
     require_valid_digest "$4"
     run_compose config --quiet
     umask 077
-    printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\n' "$2" "${NORMALIZED_DIGEST#sha256:}" > "$STAGED_ENV_FILE.tmp" || fail "cannot write staged runtime manifest"
+    printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s\n' "$2" "${NORMALIZED_DIGEST#sha256:}" "$2" > "$STAGED_ENV_FILE.tmp" || fail "cannot write staged runtime manifest"
     chmod 0644 "$STAGED_ENV_FILE.tmp" || fail "cannot set staged runtime manifest mode"
     mv "$STAGED_ENV_FILE.tmp" "$STAGED_ENV_FILE" || fail "cannot publish staged runtime manifest"
     ;;
@@ -86,12 +86,18 @@ case "$command" in
     run_compose exec -T edge edge-proxy probe ready --admin-bind 127.0.0.1:9443
     ;;
   admit-artifact)
-    [ "$#" -eq 4 ] && [ "$1" = "--input" ] && [ "$3" = "--image-digest" ] || fail "invalid admission arguments"
-    require_valid_digest "$4"
+    [ "$#" -eq 6 ] && [ "$1" = "--input" ] && [ "$3" = "--version" ] && [ "$5" = "--image-digest" ] || fail "invalid admission arguments"
+    case "$4" in v[0-9]*.[0-9]*.[0-9]*) ;; *) fail "invalid version" ;; esac
+    require_valid_digest "$6"
     require_root_owned_artifact "$2"
-    [ -x "$DOCKER" ] && [ -x "$GREP" ] || fail "required executable is unavailable"
+    [ -x "$DOCKER" ] || fail "Docker executable is unavailable"
     "$DOCKER" image load --input "$2"
-    "$DOCKER" image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$NORMALIZED_DIGEST" | "$GREP" -Fx -q "ghcr.io/sponzey-lab/sponzey-edge@$NORMALIZED_DIGEST" || fail "loaded artifact digest mismatch"
+    image_reference="ghcr.io/sponzey-lab/sponzey-edge:$4"
+    loaded_version=$("$DOCKER" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image_reference") || fail "loaded artifact tag is unavailable"
+    [ "$loaded_version" = "$4" ] || fail "loaded artifact version mismatch"
+    loaded_revision=$("$DOCKER" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_reference") || fail "loaded artifact tag is unavailable"
+    [ "${#loaded_revision}" -eq 40 ] || fail "loaded artifact revision is invalid"
+    case "$loaded_revision" in *[!0123456789abcdef]*|'') fail "loaded artifact revision is invalid" ;; esac
     ;;
   stage-artifact)
     [ "$#" -eq 2 ] && [ "$1" = "--image-digest" ] || fail "invalid stage arguments"
@@ -99,7 +105,8 @@ case "$command" in
     [ -f "$STAGED_ENV_FILE" ] && [ ! -L "$STAGED_ENV_FILE" ] || fail "staged runtime manifest is missing or unsafe"
     owner=$(stat -c %u "$STAGED_ENV_FILE" 2>/dev/null || stat -f %u "$STAGED_ENV_FILE") || fail "cannot inspect staged runtime manifest owner"
     [ "$owner" = "$ROOT_UID" ] || fail "staged runtime manifest is not root owned"
-    expected_manifest=$(printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s' "$(sed -n 's/^SPONZEY_EDGE_TAG=//p' "$STAGED_ENV_FILE")" "${NORMALIZED_DIGEST#sha256:}")
+    staged_tag=$(sed -n 's/^SPONZEY_EDGE_TAG=//p' "$STAGED_ENV_FILE")
+    expected_manifest=$(printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s' "$staged_tag" "${NORMALIZED_DIGEST#sha256:}" "$staged_tag")
     [ "$(cat "$STAGED_ENV_FILE")" = "$expected_manifest" ] || fail "staged runtime manifest digest mismatch"
     ;;
   switch-staged)
