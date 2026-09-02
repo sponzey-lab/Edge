@@ -116,6 +116,7 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertIn("--target ${{ matrix.rust_target }}", self.workflow)
         self.assertIn("Verify Linux archive binary is statically linked", self.workflow)
         self.assertIn("statically linked", self.workflow)
+        self.assertIn("static-pie linked", self.workflow)
 
     def test_ci_actions_use_the_node24_action_runtime(self) -> None:
         workflow_paths = (

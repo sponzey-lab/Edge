@@ -29,9 +29,11 @@ immutable but non-releasable: its workflow correctly rejected the tagged version
 executable package still declared `0.0.10`, and consequently it has no prerelease artifact or
 published image. The public `v0.1.1` prerelease is also non-releasable: its Linux archives require
 GLIBC_2.39 and cannot run on the supported Ubuntu 22.04 clean host. It remains immutable and must
-not be reused. The current tree carries `v0.1.2 candidate metadata`, but has no `v0.1.2` tag or published artifact;
-its Linux archive workflow builds musl-static targets and verifies static
-linkage before packaging. It retains only `DAC_OVERRIDE` in the short-lived root override. The
+not be reused. The immutable `v0.1.2` tag failed before artifact publication because its x86_64
+static-PIE binary did not match an overly narrow `file` output check; it must not be moved or reused.
+The current tree carries `v0.1.3 candidate metadata`, but has no `v0.1.3` tag or published artifact;
+its Linux archive workflow accepts either static or static-PIE `file` output before packaging. It
+retains only `DAC_OVERRIDE` in the short-lived root override. The
 unpublished v0.0.9 source correctly declared its closing responses but lost enough throughput to
 fail C8; v0.0.10 instead supports
 one-at-a-time plaintext HTTP/1.1 client keep-alive after a fully flushed response, while still

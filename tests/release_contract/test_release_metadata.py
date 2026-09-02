@@ -11,12 +11,12 @@ CANONICAL_REPOSITORY = "https://github.com/sponzey-lab/Sponzey-Edge"
 
 
 class ReleaseMetadataContractTest(unittest.TestCase):
-    def test_current_portable_candidate_metadata_is_v012_before_tagging(self) -> None:
+    def test_current_portable_candidate_metadata_is_v013_before_tagging(self) -> None:
         manifest = (ROOT / "apps" / "edge-proxy" / "Cargo.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "0.1.2"', manifest)
+        self.assertIn('version = "0.1.3"', manifest)
         current_state = (ROOT / "docs" / "current-state.md").read_text(encoding="utf-8")
-        self.assertIn("v0.1.2 candidate metadata", current_state)
-        self.assertIn("but has no `v0.1.2` tag", current_state)
+        self.assertIn("v0.1.3 candidate metadata", current_state)
+        self.assertIn("but has no `v0.1.3` tag", current_state)
         self.assertIn("or published artifact", current_state)
         self.assertIn("The `v0.1.0` tag is", current_state)
         self.assertIn("immutable but non-releasable", current_state)

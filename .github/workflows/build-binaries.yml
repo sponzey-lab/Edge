@@ -129,7 +129,14 @@ jobs:
 
       - name: Verify Linux archive binary is statically linked
         if: matrix.linux_musl
-        run: file "${{ matrix.binary_path }}" | grep -F "statically linked"
+        shell: bash
+        run: |
+          description="$(file "${{ matrix.binary_path }}")"
+          printf '%s\n' "${description}"
+          if [[ "${description}" != *"statically linked"* && "${description}" != *"static-pie linked"* ]]; then
+            echo "Linux archive binary must be statically linked or static PIE." >&2
+            exit 1
+          fi
 
       - name: Package artifact
         shell: bash
