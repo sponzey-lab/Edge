@@ -9,6 +9,7 @@ STAGED_ENV_FILE=/etc/sponzey-edge/compose/runtime.env.stage
 PREVIOUS_ENV_FILE=/etc/sponzey-edge/compose/runtime.env.previous
 UPGRADE_PASSPHRASE_FILE=/run/secrets/sponzey-edge-upgrade-passphrase
 BACKUP_ARCHIVE=/var/lib/sponzey-edge/data/backups/upgrade.sponzey
+DATA_VOLUME=compose_edge-data
 DOCKER=/usr/bin/docker
 SHA256SUM=/usr/bin/sha256sum
 ROOT_UID=0
@@ -76,14 +77,14 @@ case "$command" in
     ;;
   drain-stop)
     [ "$#" -eq 0 ] || fail "drain-stop takes no arguments"
-    run_compose stop --timeout 30 edge
+    run_compose stop --timeout 30 edge >/dev/null
     ;;
   start-ready)
     [ "$#" -eq 0 ] || fail "start-ready takes no arguments"
     # The staged runtime manifest may select a different immutable image.  Let
     # Compose recreate the stopped service when its image configuration changes.
-    run_compose up --no-build --pull never --detach edge
-    run_compose exec -T edge edge-proxy probe ready --admin-bind 127.0.0.1:9443
+    run_compose up --no-build --pull never --detach edge >/dev/null
+    run_compose exec -T edge edge-proxy probe ready --admin-bind 127.0.0.1:9443 >/dev/null
     ;;
   admit-artifact)
     [ "$#" -eq 6 ] && [ "$1" = "--input" ] && [ "$3" = "--version" ] && [ "$5" = "--image-digest" ] || fail "invalid admission arguments"
@@ -91,7 +92,9 @@ case "$command" in
     require_valid_digest "$6"
     require_root_owned_artifact "$2"
     [ -x "$DOCKER" ] || fail "Docker executable is unavailable"
-    "$DOCKER" image load --input "$2"
+    # The Rust helper runner accepts receipt output only from the backup command.
+    # Docker prints a successful load message on stdout, so keep admission quiet.
+    "$DOCKER" image load --input "$2" >/dev/null
     image_reference="ghcr.io/sponzey-lab/sponzey-edge:$4"
     loaded_version=$("$DOCKER" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image_reference") || fail "loaded artifact tag is unavailable"
     [ "$loaded_version" = "$4" ] || fail "loaded artifact version mismatch"
@@ -141,8 +144,11 @@ case "$command" in
     run_upgrade_compose run --rm --no-deps edge edge-proxy backup create --data-dir /var/lib/sponzey-edge/data --output "$BACKUP_ARCHIVE" --passphrase-file /run/secrets/upgrade-passphrase >/dev/null
     run_upgrade_compose run --rm --no-deps edge edge-proxy backup verify --input "$BACKUP_ARCHIVE" --passphrase-file /run/secrets/upgrade-passphrase >/dev/null
     [ -x "$SHA256SUM" ] || fail "checksum executable is unavailable"
-    require_root_owned_artifact "$BACKUP_ARCHIVE"
-    set -- $("$SHA256SUM" "$BACKUP_ARCHIVE")
+    volume_mount=$("$DOCKER" volume inspect --format '{{ .Mountpoint }}' "$DATA_VOLUME") || fail "cannot inspect Compose data volume"
+    case "$volume_mount" in /*) ;; *) fail "Compose data volume mount is invalid" ;; esac
+    host_backup_archive=$volume_mount/data/backups/upgrade.sponzey
+    require_root_owned_artifact "$host_backup_archive"
+    set -- $("$SHA256SUM" "$host_backup_archive")
     require_valid_digest "$1"
     printf 'backup_id=%s\nprevious_artifact_digest=%s\n' "${NORMALIZED_DIGEST#sha256:}" "$previous_artifact_digest"
     ;;

@@ -42,9 +42,18 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         helper = self.helper.read_text(encoding="utf-8")
         installer = self.install.read_text(encoding="utf-8")
-        self.assertIn("${SPONZEY_EDGE_IMAGE_REFERENCE:?set the fixed runtime image reference}", compose)
+        self.assertIn(
+            "${SPONZEY_EDGE_IMAGE_REFERENCE:-ghcr.io/sponzey-lab/sponzey-edge:${SPONZEY_EDGE_TAG:?set a SemVer tag}@sha256:${SPONZEY_EDGE_DIGEST:?set the matching immutable image digest}}",
+            compose,
+        )
         self.assertIn('SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s@sha256:%s', installer)
         self.assertIn('SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s', helper)
+
+    def test_prepared_control_plane_accepts_a_pre_reference_immutable_runtime_manifest(self) -> None:
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("SPONZEY_EDGE_IMAGE_REFERENCE:-", compose)
+        self.assertIn("SPONZEY_EDGE_TAG:?set a SemVer tag", compose)
+        self.assertIn("SPONZEY_EDGE_DIGEST:?set the matching immutable image digest", compose)
 
     def test_official_compose_documentation_uses_the_fixed_runtime_image_manifest(self) -> None:
         for document in ("README.md", "docs/deployment.md", "docs/install.md"):
@@ -66,6 +75,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         upgrade_override = (self.directory / "docker-compose.upgrade.yml").read_text(encoding="utf-8")
         self.assertIn('user: "0:0"', upgrade_override)
         self.assertIn("cap_add:\n      - DAC_OVERRIDE", upgrade_override)
+        self.assertIn("      - FOWNER", upgrade_override)
         self.assertIn("/run/secrets/sponzey-edge-upgrade-passphrase", upgrade_override)
 
     def test_helper_requires_the_fixed_project_and_compose_file_without_docker_socket(self) -> None:
@@ -76,6 +86,12 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         self.assertNotIn("docker.sock", source)
         self.assertNotIn('"--passphrase"', source)
         self.assertNotIn("eval ", source)
+
+    def test_non_receipt_helper_commands_keep_compose_chatter_off_stdout(self) -> None:
+        source = self.helper.read_text(encoding="utf-8")
+        self.assertIn('run_compose stop --timeout 30 edge >/dev/null', source)
+        self.assertIn('run_compose up --no-build --pull never --detach edge >/dev/null', source)
+        self.assertIn('edge-proxy probe ready --admin-bind 127.0.0.1:9443 >/dev/null', source)
 
     def test_shell_assets_are_syntax_valid(self) -> None:
         for path in [self.helper, self.install, self.prepare]:
@@ -265,6 +281,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             fake_docker = temporary / "docker"
             fake_docker.write_text(
                 "#!/bin/sh\nprintf '%s ' \"$@\" >> \"$CAPTURE\"\nprintf '\\n' >> \"$CAPTURE\"\n"
+                "if [ \"$1\" = image ] && [ \"$2\" = load ]; then printf '%s\\n' 'loaded image chatter'; fi\n"
                 "if [ \"$1\" = image ] && [ \"$2\" = inspect ]; then\n"
                 "  case \"$4\" in\n"
                 "    *version*) printf '%s\\n' v1.2.3 ;;\n"
@@ -283,7 +300,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             )
             helper.chmod(0o755)
 
-            subprocess.run(
+            result = subprocess.run(
                 [
                     str(helper),
                     "--project-directory",
@@ -298,10 +315,14 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                     "--image-digest",
                     digest,
                 ],
-                check=True,
+                capture_output=True,
+                text=True,
                 cwd=ROOT,
                 env={"CAPTURE": str(capture)},
             )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
 
             self.assertEqual(
                 capture.read_text(encoding="utf-8").splitlines(),
@@ -465,11 +486,15 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             active = temporary / "runtime.env"
             secret = temporary / "passphrase"
             archive = temporary / "upgrade.sponzey"
+            volume_mount = temporary / "compose-edge-data"
             active.write_text("SPONZEY_EDGE_TAG=v1.0.0\nSPONZEY_EDGE_DIGEST=" + "a" * 64 + "\n", encoding="utf-8")
             secret.write_text("not-a-secret-in-test\n", encoding="utf-8")
             fake_docker = temporary / "docker"
             fake_docker.write_text(
-                "#!/bin/sh\nprintf 'untrusted compose chatter\\n'\nprintf 'fixture archive' > \"$ARCHIVE\"\n",
+                "#!/bin/sh\n"
+                "if [ \"$1\" = volume ] && [ \"$2\" = inspect ]; then printf '%s\\n' \"$VOLUME_MOUNT\"; exit 0; fi\n"
+                "printf 'untrusted compose chatter\\n'\n"
+                "mkdir -p \"$VOLUME_MOUNT/data/backups\"\nprintf 'fixture archive' > \"$VOLUME_MOUNT/data/backups/upgrade.sponzey\"\n",
                 encoding="utf-8",
             )
             fake_docker.chmod(0o755)
@@ -497,7 +522,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                env={"ARCHIVE": str(archive)},
+                env={"VOLUME_MOUNT": str(volume_mount)},
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)

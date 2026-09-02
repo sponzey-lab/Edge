@@ -34,9 +34,9 @@ static-PIE binary did not match an overly narrow `file` output check; it must no
 The public `v0.1.3` prerelease has a portable static-PIE Linux archive but its Compose offline
 image admission incorrectly expects Docker `image load` to preserve the published OCI index digest;
 it is therefore not eligible for the clean-host upgrade matrix and remains immutable. The current
-tree carries `v0.1.4 candidate metadata`, but has no `v0.1.4` tag or published artifact; its Linux
-archive workflow accepts either static or static-PIE `file` output before packaging. It retains only
-`DAC_OVERRIDE` in the short-lived root override. Its Compose package keeps first installation pinned
+tree carries `v0.1.5 candidate metadata`, but has no `v0.1.5` tag or published artifact; its Linux
+archive workflow accepts either static or static-PIE `file` output before packaging. Its short-lived root override
+uses `DAC_OVERRIDE` plus `FOWNER` only for the exclusive data-lock backup. Its Compose package keeps first installation pinned
 to tag+digest, while an explicitly prepared offline upgrade validates a root-owned tagged image
 archive's OCI version and revision labels before using the admitted local tag. The
 unpublished v0.0.9 source correctly declared its closing responses but lost enough throughput to

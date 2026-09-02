@@ -178,6 +178,11 @@ digest, then save the tag after it has been bound to that digest. Docker does
 not preserve an OCI index `RepoDigest` across `image save`/`image load`, so
 saving the bare digest reference is not a valid offline artifact.
 
+The prepared Compose file remains compatible with the older two-field
+`SPONZEY_EDGE_TAG`/`SPONZEY_EDGE_DIGEST` manifest during the backup phase. New
+installs still use the complete immutable image reference; the helper changes
+the runtime manifest atomically only after artifact admission and backup.
+
 ```bash
 IMAGE=ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:RELEASE_MANIFEST_IMAGE_SHA256
 sudo docker pull "$IMAGE"

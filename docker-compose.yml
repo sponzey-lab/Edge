@@ -1,6 +1,9 @@
 services:
   edge:
-    image: ${SPONZEY_EDGE_IMAGE_REFERENCE:?set the fixed runtime image reference}
+    # New installs pin this complete immutable reference.  The nested fallback
+    # keeps a prepared control plane compatible with an older runtime manifest
+    # until the upgrade helper atomically stages the local admitted tag.
+    image: ${SPONZEY_EDGE_IMAGE_REFERENCE:-ghcr.io/sponzey-lab/sponzey-edge:${SPONZEY_EDGE_TAG:?set a SemVer tag}@sha256:${SPONZEY_EDGE_DIGEST:?set the matching immutable image digest}}
     network_mode: host
     restart: unless-stopped
     init: true

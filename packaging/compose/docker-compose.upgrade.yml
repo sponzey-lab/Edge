@@ -6,6 +6,9 @@ services:
     user: "0:0"
     cap_add:
       - DAC_OVERRIDE
+      # The prior non-root runtime owns the persistent lock file.  FOWNER is
+      # required only while the short-lived root backup re-applies its 0600 mode.
+      - FOWNER
     volumes:
       - type: bind
         source: /run/secrets/sponzey-edge-upgrade-passphrase
