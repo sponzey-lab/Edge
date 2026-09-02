@@ -129,11 +129,13 @@ case "$command" in
   rollback)
     [ "$#" -eq 4 ] && [ "$1" = "--backup-id" ] && [ "$3" = "--previous-artifact-digest" ] || fail "invalid rollback arguments"
     require_valid_digest "$4"
+    expected_previous_digest=$NORMALIZED_DIGEST
     [ -f "$PREVIOUS_ENV_FILE" ] && [ ! -L "$PREVIOUS_ENV_FILE" ] || fail "previous runtime manifest is missing or unsafe"
     previous_digest=$(sed -n 's/^SPONZEY_EDGE_DIGEST=//p' "$PREVIOUS_ENV_FILE")
     require_valid_digest "$previous_digest"
-    [ "$NORMALIZED_DIGEST" = "sha256:$4" ] || fail "previous runtime manifest digest mismatch"
+    [ "$NORMALIZED_DIGEST" = "$expected_previous_digest" ] || fail "previous runtime manifest digest mismatch"
     mv "$PREVIOUS_ENV_FILE" "$RUNTIME_ENV_FILE" || fail "cannot restore previous runtime manifest"
+    run_compose up --no-build --pull never --detach --wait edge >/dev/null
     ;;
   backup-create-verify)
     [ "$#" -eq 2 ] && [ "$1" = "--passphrase-file" ] && [ "$2" = "$UPGRADE_PASSPHRASE_FILE" ] || fail "unsupported upgrade passphrase file"

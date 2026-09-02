@@ -33,12 +33,16 @@ not be reused. The immutable `v0.1.2` tag failed before artifact publication bec
 static-PIE binary did not match an overly narrow `file` output check; it must not be moved or reused.
 The public `v0.1.3` prerelease has a portable static-PIE Linux archive but its Compose offline
 image admission incorrectly expects Docker `image load` to preserve the published OCI index digest;
-it is therefore not eligible for the clean-host upgrade matrix and remains immutable. The current
-tree carries `v0.1.5 candidate metadata`, but has no `v0.1.5` tag or published artifact; its Linux
-archive workflow accepts either static or static-PIE `file` output before packaging. Its short-lived root override
+it is therefore not eligible for the clean-host upgrade matrix and remains immutable. The public
+`v0.1.5` prerelease has a portable Linux archive and corrects offline image admission, but its
+Compose rollback rejects the journal's valid `sha256:` predecessor digest and its systemd uninstall
+leaves the fixed upgrade helper behind; it is not eligible for promotion. The current tree carries
+`v0.1.6 candidate metadata`, but has no `v0.1.6` tag or published artifact; its Linux archive
+workflow accepts either static or static-PIE `file` output before packaging. Its short-lived root override
 uses `DAC_OVERRIDE` plus `FOWNER` only for the exclusive data-lock backup. Its Compose package keeps first installation pinned
 to tag+digest, while an explicitly prepared offline upgrade validates a root-owned tagged image
-archive's OCI version and revision labels before using the admitted local tag. The
+archive's OCI version and revision labels before using the admitted local tag; rollback normalizes
+the journal digest and restarts the reverted predecessor through Compose health checks. The
 unpublished v0.0.9 source correctly declared its closing responses but lost enough throughput to
 fail C8; v0.0.10 instead supports
 one-at-a-time plaintext HTTP/1.1 client keep-alive after a fully flushed response, while still

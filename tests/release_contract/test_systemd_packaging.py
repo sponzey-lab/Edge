@@ -37,7 +37,9 @@ class SystemdPackagingContractTest(unittest.TestCase):
         self.assertIn("systemctl enable --now sponzey-edge.service", self.install)
         self.assertIn("getent passwd edge", self.install)
         self.assertIn("systemctl disable --now sponzey-edge.service", self.uninstall)
+        self.assertIn("rm -f /usr/local/libexec/sponzey-edge/upgrade-helper", self.uninstall)
         self.assertNotIn("rm -rf /var/lib/sponzey-edge", self.uninstall)
+        self.assertNotIn("rm -rf /etc/sponzey-edge", self.uninstall)
 
     def test_preflight_is_read_only_and_rejects_unsupported_hosts(self) -> None:
         self.assertIn("uname -m", self.preflight)

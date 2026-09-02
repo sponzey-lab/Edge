@@ -93,6 +93,12 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         self.assertIn('run_compose up --no-build --pull never --detach edge >/dev/null', source)
         self.assertIn('edge-proxy probe ready --admin-bind 127.0.0.1:9443 >/dev/null', source)
 
+    def test_rollback_restarts_and_healthchecks_the_reverted_runtime(self) -> None:
+        source = self.helper.read_text(encoding="utf-8")
+        rollback = source.split('  rollback)\n', 1)[1].split('  backup-create-verify)', 1)[0]
+        self.assertIn('run_compose up --no-build --pull never --detach --wait edge >/dev/null', rollback)
+        self.assertNotIn('edge-proxy probe ready', rollback)
+
     def test_shell_assets_are_syntax_valid(self) -> None:
         for path in [self.helper, self.install, self.prepare]:
             subprocess.run(["sh", "-n", str(path)], check=True, cwd=ROOT)
@@ -429,6 +435,13 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
     def test_switch_and_rollback_replace_only_fixed_runtime_manifests(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
+            capture = temporary / "docker-arguments"
+            fake_docker = temporary / "docker"
+            fake_docker.write_text(
+                "#!/bin/sh\nprintf '%s ' \"$@\" >> \"$CAPTURE\"\nprintf '\\n' >> \"$CAPTURE\"\n",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
             active = temporary / "runtime.env"
             staged = temporary / "runtime.env.stage"
             previous = temporary / "runtime.env.previous"
@@ -437,6 +450,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             helper = temporary / "compose-upgrade-helper"
             helper.write_text(
                 self.helper.read_text(encoding="utf-8")
+                .replace("DOCKER=/usr/bin/docker", f"DOCKER={fake_docker}")
                 .replace("ROOT_UID=0", f"ROOT_UID={os.getuid()}")
                 .replace("RUNTIME_ENV_FILE=/etc/sponzey-edge/compose/runtime.env", f"RUNTIME_ENV_FILE='{active}'")
                 .replace("STAGED_ENV_FILE=/etc/sponzey-edge/compose/runtime.env.stage", f"STAGED_ENV_FILE='{staged}'")
@@ -446,11 +460,17 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             helper.chmod(0o755)
             prefix = [str(helper), "--project-directory", "/etc/sponzey-edge/compose", "--file", "/etc/sponzey-edge/compose/docker-compose.yml"]
 
-            subprocess.run([*prefix, "switch-staged"], check=True, cwd=ROOT)
+            subprocess.run([*prefix, "switch-staged"], check=True, cwd=ROOT, env={"CAPTURE": str(capture)})
             self.assertIn("v1.1.0", active.read_text(encoding="utf-8"))
             self.assertIn("v1.0.0", previous.read_text(encoding="utf-8"))
-            subprocess.run([*prefix, "rollback", "--backup-id", "backup", "--previous-artifact-digest", "a" * 64], check=True, cwd=ROOT)
+            subprocess.run([*prefix, "rollback", "--backup-id", "backup", "--previous-artifact-digest", "a" * 64], check=True, cwd=ROOT, env={"CAPTURE": str(capture)})
             self.assertIn("v1.0.0", active.read_text(encoding="utf-8"))
+            self.assertEqual(
+                capture.read_text(encoding="utf-8").splitlines(),
+                [
+                    f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {active} up --no-build --pull never --detach --wait edge ",
+                ],
+            )
 
     def test_rollback_rejects_a_previous_manifest_with_the_wrong_digest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -479,6 +499,40 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             self.assertIn("previous runtime manifest digest mismatch", result.stderr)
             self.assertTrue(previous.exists())
             self.assertIn("v1.1.0", active.read_text(encoding="utf-8"))
+
+    def test_rollback_accepts_the_sha256_prefixed_journal_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            active = temporary / "runtime.env"
+            previous = temporary / "runtime.env.previous"
+            active.write_text("SPONZEY_EDGE_TAG=v1.1.0\nSPONZEY_EDGE_DIGEST=" + "b" * 64 + "\n", encoding="utf-8")
+            previous.write_text("SPONZEY_EDGE_TAG=v1.0.0\nSPONZEY_EDGE_DIGEST=" + "a" * 64 + "\n", encoding="utf-8")
+            fake_docker = temporary / "docker"
+            fake_docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_docker.chmod(0o755)
+            helper = temporary / "compose-upgrade-helper"
+            helper.write_text(
+                self.helper.read_text(encoding="utf-8")
+                .replace("DOCKER=/usr/bin/docker", f"DOCKER={fake_docker}")
+                .replace("RUNTIME_ENV_FILE=/etc/sponzey-edge/compose/runtime.env", f"RUNTIME_ENV_FILE='{active}'")
+                .replace("PREVIOUS_ENV_FILE=/etc/sponzey-edge/compose/runtime.env.previous", f"PREVIOUS_ENV_FILE='{previous}'"),
+                encoding="utf-8",
+            )
+            helper.chmod(0o755)
+
+            subprocess.run(
+                [
+                    str(helper),
+                    "--project-directory", "/etc/sponzey-edge/compose",
+                    "--file", "/etc/sponzey-edge/compose/docker-compose.yml",
+                    "rollback", "--backup-id", "backup", "--previous-artifact-digest", "sha256:" + "a" * 64,
+                ],
+                check=True,
+                cwd=ROOT,
+            )
+
+            self.assertIn("v1.0.0", active.read_text(encoding="utf-8"))
+            self.assertFalse(previous.exists())
 
     def test_backup_receipt_is_strict_and_excludes_compose_command_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
