@@ -27,8 +27,11 @@ prerelease corrects that command, but its root-only Compose backup override lack
 capability required to open the edge-owned data lock after `cap_drop: ALL`. The `v0.1.0` tag is
 immutable but non-releasable: its workflow correctly rejected the tagged version because the
 executable package still declared `0.0.10`, and consequently it has no prerelease artifact or
-published image. The current tree carries `v0.1.1 candidate metadata`, but has no `v0.1.1` tag
-or published artifact. It retains only `DAC_OVERRIDE` in the short-lived root override. The
+published image. The public `v0.1.1` prerelease is also non-releasable: its Linux archives require
+GLIBC_2.39 and cannot run on the supported Ubuntu 22.04 clean host. It remains immutable and must
+not be reused. The current tree carries `v0.1.2 candidate metadata`, but has no `v0.1.2` tag or published artifact;
+its Linux archive workflow builds musl-static targets and verifies static
+linkage before packaging. It retains only `DAC_OVERRIDE` in the short-lived root override. The
 unpublished v0.0.9 source correctly declared its closing responses but lost enough throughput to
 fail C8; v0.0.10 instead supports
 one-at-a-time plaintext HTTP/1.1 client keep-alive after a fully flushed response, while still
