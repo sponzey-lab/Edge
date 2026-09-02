@@ -56,6 +56,8 @@ claim. Record and cross-check all of the following against that candidate:
 
 - GitHub Release URL and tag-to-commit identity
 - Linux `amd64` and `arm64` archive checksums and SPDX SBOM checksum
+- static-link verification for each Linux archive binary; the archive must run
+  on the supported clean host without relying on that host's glibc version
 - GHCR repository, immutable multi-architecture manifest digest, and OCI
   revision/version labels
 - an anonymous pull of the exact digest before the prerelease is created

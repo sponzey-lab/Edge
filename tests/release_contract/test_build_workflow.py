@@ -108,6 +108,15 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertIn("cp packaging/systemd/preflight.sh dist/systemd/", self.workflow)
         self.assertIn("cp examples/minimal.toml dist/current.toml", self.workflow)
 
+    def test_linux_release_archives_are_built_and_verified_as_static_musl_binaries(self) -> None:
+        self.assertIn("x86_64-unknown-linux-musl", self.workflow)
+        self.assertIn("aarch64-unknown-linux-musl", self.workflow)
+        self.assertIn("rustup target add ${{ matrix.rust_target }}", self.workflow)
+        self.assertIn("sudo apt-get install -y musl-tools", self.workflow)
+        self.assertIn("--target ${{ matrix.rust_target }}", self.workflow)
+        self.assertIn("Verify Linux archive binary is statically linked", self.workflow)
+        self.assertIn("statically linked", self.workflow)
+
     def test_ci_actions_use_the_node24_action_runtime(self) -> None:
         workflow_paths = (
             ROOT / ".github" / "workflows" / "build-binaries.yml",

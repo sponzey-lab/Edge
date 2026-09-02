@@ -62,13 +62,17 @@ jobs:
           - os: ubuntu-latest
             artifact_name: edge-proxy-linux-x86_64
             binary_name: edge-proxy
-            binary_path: target/release/edge-proxy
+            rust_target: x86_64-unknown-linux-musl
+            linux_musl: true
+            binary_path: target/x86_64-unknown-linux-musl/release/edge-proxy
             package_name: edge-proxy-linux-x86_64.tar.gz
             package_command: mkdir -p dist/systemd dist/compose && cp packaging/systemd/sponzey-edge.service dist/systemd/ && cp packaging/systemd/install.sh packaging/systemd/uninstall.sh packaging/systemd/upgrade-helper dist/systemd/ && cp packaging/systemd/preflight.sh dist/systemd/ && cp packaging/compose/compose-upgrade-helper packaging/compose/install.sh packaging/compose/docker-compose.upgrade.yml dist/compose/ && cp docker-compose.yml dist/compose/docker-compose.yml && cp examples/minimal.toml dist/current.toml && tar -czf dist/edge-proxy-linux-x86_64.tar.gz -C dist edge-proxy current.toml systemd compose
           - os: ubuntu-24.04-arm
             artifact_name: edge-proxy-linux-arm64
             binary_name: edge-proxy
-            binary_path: target/release/edge-proxy
+            rust_target: aarch64-unknown-linux-musl
+            linux_musl: true
+            binary_path: target/aarch64-unknown-linux-musl/release/edge-proxy
             package_name: edge-proxy-linux-arm64.tar.gz
             package_command: mkdir -p dist/systemd dist/compose && cp packaging/systemd/sponzey-edge.service dist/systemd/ && cp packaging/systemd/install.sh packaging/systemd/uninstall.sh packaging/systemd/upgrade-helper dist/systemd/ && cp packaging/systemd/preflight.sh dist/systemd/ && cp packaging/compose/compose-upgrade-helper packaging/compose/install.sh packaging/compose/docker-compose.upgrade.yml dist/compose/ && cp docker-compose.yml dist/compose/docker-compose.yml && cp examples/minimal.toml dist/current.toml && tar -czf dist/edge-proxy-linux-arm64.tar.gz -C dist edge-proxy current.toml systemd compose
           - os: macos-15-intel
@@ -108,8 +112,24 @@ jobs:
         run: |
           rustup toolchain install 1.94.0 --profile minimal
 
+      - name: Install static Linux target
+        if: matrix.linux_musl
+        run: |
+          rustup target add ${{ matrix.rust_target }}
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
       - name: Build release binary
+        if: matrix.linux_musl
+        run: cargo build --release --locked -p edge-proxy --target ${{ matrix.rust_target }}
+
+      - name: Build native release binary
+        if: ${{ !matrix.linux_musl }}
         run: cargo build --release --locked -p edge-proxy
+
+      - name: Verify Linux archive binary is statically linked
+        if: matrix.linux_musl
+        run: file "${{ matrix.binary_path }}" | grep -F "statically linked"
 
       - name: Package artifact
         shell: bash
