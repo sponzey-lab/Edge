@@ -95,14 +95,15 @@ case "$command" in
     "$SYSTEMCTL" start sponzey-edge.service
     ;;
   admit-artifact)
-    [ "$#" -eq 4 ] && [ "$1" = "--input" ] && [ "$3" = "--image-digest" ] || fail "invalid admission arguments"
+    [ "$#" -eq 6 ] && [ "$1" = "--input" ] && [ "$3" = "--version" ] && [ "$5" = "--image-digest" ] || fail "invalid admission arguments"
     case "$2" in /*) ;; *) fail "artifact input must be absolute" ;; esac
     [ "$2" != "$STAGED_BINARY" ] || fail "artifact input must not be the staged target"
-    require_digest "$4"
+    case "$4" in v[0-9]*.[0-9]*.[0-9]*) ;; *) fail "invalid version" ;; esac
+    require_digest "$6"
     require_root_owned_file "$2" "artifact input is missing or unsafe"
     [ -x "$2" ] || fail "artifact input is not executable"
     actual_digest=$(sha256sum "$2" | awk '{print $1}')
-    digest=${4#sha256:}
+    digest=${6#sha256:}
     [ "$actual_digest" = "$digest" ] || fail "artifact input digest mismatch"
     if [ -e "$STAGED_BINARY" ] || [ -L "$STAGED_BINARY" ]; then
       require_regular_file "$STAGED_BINARY" "staged binary target is unsafe"

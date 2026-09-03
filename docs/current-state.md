@@ -39,8 +39,10 @@ Compose rollback rejects the journal's valid `sha256:` predecessor digest and it
 leaves the fixed upgrade helper behind; it is not eligible for promotion.
 The public `v0.1.6` prerelease corrects Compose rollback digest normalization and systemd uninstall
 cleanup, but its systemd helper incorrectly rejects a conventional root-owned `0755` local artifact
-before an offline upgrade; it is not eligible for promotion. The current tree carries `v0.1.7 candidate metadata`,
-but has no `v0.1.7` tag or published artifact; its Linux archive workflow accepts either
+before an offline upgrade; it is not eligible for promotion. The public `v0.1.7` prerelease corrects
+that permission check, but its systemd helper rejects the adapter's explicit version argument before
+offline admission; it is not eligible for promotion. The current tree carries `v0.1.8 candidate metadata`,
+but has no `v0.1.8` tag or published artifact; its Linux archive workflow accepts either
 static or static-PIE `file` output before packaging. Its short-lived root override
 uses `DAC_OVERRIDE` plus `FOWNER` only for the exclusive data-lock backup. Its Compose package keeps first installation pinned
 to tag+digest, while an explicitly prepared offline upgrade validates a root-owned tagged image

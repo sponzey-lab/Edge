@@ -48,6 +48,11 @@ class UpgradeHelperPackagingContractTest(unittest.TestCase):
         source = self.helper.read_text(encoding="utf-8")
         self.assertIn("admit-artifact)", source)
         self.assertIn('"--input"', source)
+        self.assertIn(
+            '[ "$#" -eq 6 ] && [ "$1" = "--input" ] && [ "$3" = "--version" ] && [ "$5" = "--image-digest" ]',
+            source,
+        )
+        self.assertIn('case "$4" in v[0-9]*.[0-9]*.[0-9]*)', source)
         self.assertIn('case "$2" in /*)', source)
         self.assertIn('require_root_owned_file "$2"', source)
         self.assertIn("artifact source must be root-owned", source)
