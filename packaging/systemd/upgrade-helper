@@ -35,7 +35,15 @@ require_root_owned_file() {
   require_regular_file "$1" "$2"
   [ "$(stat -c '%u' "$1")" -eq 0 ] || fail "artifact source must be root-owned"
   mode=$(stat -c '%a' "$1") || fail "cannot inspect artifact source"
-  [ $((mode % 100)) -eq 0 ] || fail "artifact source must not be group or world writable"
+  case "$mode" in
+    [0-7][0-7][0-7]) permission_bits=$mode ;;
+    [0-7][0-7][0-7][0-7]) permission_bits=${mode#?} ;;
+    *) fail "cannot inspect artifact source" ;;
+  esac
+  group_and_other=${permission_bits#?}
+  case "$group_and_other" in
+    *[2367]*) fail "artifact source must not be group or world writable" ;;
+  esac
 }
 
 command=${1:-}

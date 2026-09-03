@@ -57,6 +57,12 @@ class UpgradeHelperPackagingContractTest(unittest.TestCase):
         self.assertIn('mv "$STAGED_BINARY.tmp" "$STAGED_BINARY"', source)
         self.assertIn('staged binary target is unsafe', source)
 
+    def test_root_owned_executable_artifacts_may_be_readable_but_not_writable_by_others(self) -> None:
+        source = self.helper.read_text(encoding="utf-8")
+        self.assertIn('permission_bits=${mode#?}', source)
+        self.assertIn('group_and_other=${permission_bits#?}', source)
+        self.assertIn('*[2367]*) fail "artifact source must not be group or world writable"', source)
+
     def test_helper_is_posix_shell_syntax_valid(self) -> None:
         subprocess.run(["sh", "-n", str(self.helper)], check=True, cwd=ROOT)
 

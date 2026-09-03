@@ -36,9 +36,12 @@ image admission incorrectly expects Docker `image load` to preserve the publishe
 it is therefore not eligible for the clean-host upgrade matrix and remains immutable. The public
 `v0.1.5` prerelease has a portable Linux archive and corrects offline image admission, but its
 Compose rollback rejects the journal's valid `sha256:` predecessor digest and its systemd uninstall
-leaves the fixed upgrade helper behind; it is not eligible for promotion. The current tree carries
-`v0.1.6 candidate metadata`, but has no `v0.1.6` tag or published artifact; its Linux archive
-workflow accepts either static or static-PIE `file` output before packaging. Its short-lived root override
+leaves the fixed upgrade helper behind; it is not eligible for promotion.
+The public `v0.1.6` prerelease corrects Compose rollback digest normalization and systemd uninstall
+cleanup, but its systemd helper incorrectly rejects a conventional root-owned `0755` local artifact
+before an offline upgrade; it is not eligible for promotion. The current tree carries `v0.1.7 candidate metadata`,
+but has no `v0.1.7` tag or published artifact; its Linux archive workflow accepts either
+static or static-PIE `file` output before packaging. Its short-lived root override
 uses `DAC_OVERRIDE` plus `FOWNER` only for the exclusive data-lock backup. Its Compose package keeps first installation pinned
 to tag+digest, while an explicitly prepared offline upgrade validates a root-owned tagged image
 archive's OCI version and revision labels before using the admitted local tag; rollback normalizes
