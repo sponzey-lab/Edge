@@ -45,9 +45,18 @@ offline admission; it is not eligible for promotion. The public `v0.1.8` prerele
 explicit-version admission contract and its Linux archive workflow accepts either static or static-PIE
 `file` output before packaging, but the Ubuntu 22.04 clean-host systemd upgrade exposed legacy
 non-zero stop handling, readiness-probe stdout, and listener-startup race defects; it is not eligible
-for promotion. A subsequent candidate must repeat the full same-identity Compose/systemd matrix.
-The current source declares the prospective `v0.1.9` candidate; it is not an artifact identity
-until its reviewed commit, tag, workflow publication, and fresh evidence exist.
+for promotion. The public `v0.1.9` prerelease (`e1eedc4`) corrects those systemd offline-upgrade
+behaviors. Workflow `34082549484` passed source quality, all six binary builds, anonymous OCI
+pull/label validation, asset assembly, manifest validation, and prerelease publication. Its immutable
+manifest binds Linux amd64 archive `8d8e83c6506c626951a2dc7710825c95c33c1c6cbb8a2c78f01ae376ccefc441`,
+Linux arm64 archive `5f19335d584a9aca8f14a2bb8196ce9d8aa65ab1695bade3040f3f26288b9af7`, and
+`ghcr.io/sponzey-lab/sponzey-edge:v0.1.9@sha256:2c582050611472aae32fbd83509b9fba1d4f8328e69df425244ecd4358a7850c`
+to that commit. On the dedicated Ubuntu 22.04 x86_64 host, the exact public archive passed
+`v0.1.3→v0.1.9` systemd full upgrade, forwarding/readiness, explicit journal recovery rollback,
+preservation, and cleanup; the exact public archive plus pinned OCI image also passed the
+`v0.0.9→v0.1.9` Compose full upgrade and explicit recovery rollback. It remains a prerelease
+candidate: this amd64 matrix does not replace remaining promotion evidence, including fresh
+platform-specific and long-duration evidence required by the active plan.
 Its short-lived root override
 uses `DAC_OVERRIDE` plus `FOWNER` only for the exclusive data-lock backup. Its Compose package keeps first installation pinned
 to tag+digest, while an explicitly prepared offline upgrade validates a root-owned tagged image
@@ -111,7 +120,8 @@ compatibility, trust CA/profile preflight와 fresh restore bidirectional TLS E2E
 no-follow path checks와 sensitive-content scan을 거친 private tar receipt만 제공한다. API/UI는
 archive filesystem path, PEM, secret, header/cookie/body/query를 노출하지 않는다. Compose/systemd
 offline upgrade helper는 fixed image digest manifest와 checksum-backed backup receipt를 사용하며,
-실제 clean-host release evidence는 아직 완료 주장 근거가 아니다. Manual certificate/private PKI만
+v0.1.9의 Ubuntu 22.04 amd64 clean-host release evidence (Compose/systemd upgrade 및 recovery)는 완료됐다.
+다만 이것만으로 제품 promotion을 주장하지 않는다. Manual certificate/private PKI만
 지원하며 external Let’s Encrypt/ACME issuance or renewal automation is explicitly deferred until
 the user reopens that scope.
 
