@@ -64,6 +64,12 @@ override. Both three-run artifacts passed independent audit (553 reference and 5
 samples), and the fail-closed comparator passed: RPS ratio `0.96445704`, p95 ratio `1.09745749`, p99
 ratio `1.09985146`, and error-rate delta `0`. This is C8 evidence for the immutable amd64 candidate,
 not arm64 deployment evidence or product promotion approval.
+The same exact amd64 candidate completed a fixed-host 30-minute soak as artifact
+`2026-09-07T07-35-03-332Z-2303534`: independent audit accepted 908 resource samples, 15,315.3605
+RPS, p95 `0.86977ms`, p99 `1.012235ms`, zero errors, and memory first/last values of 3,137,339 and
+3,461,349 bytes. The unrelated service occupying dashboard port 3000 remained untouched; the
+performance contract's explicit loopback override used port 3301. This is candidate amd64 soak
+evidence only and does not fulfill the native Linux arm64 deployment matrix.
 The v0.1.9 Linux arm64 archive checksum and static AArch64 ELF were independently verified, and
 the archive booted on the local Linux/arm64 Ubuntu 22.04 container runtime. This is an ABI/runtime
 preflight only: the available dedicated Ubuntu host is amd64 and no native Linux arm64 systemd/Compose
