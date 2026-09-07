@@ -57,6 +57,10 @@ preservation, and cleanup; the exact public archive plus pinned OCI image also p
 `v0.0.9→v0.1.9` Compose full upgrade and explicit recovery rollback. It remains a prerelease
 candidate: this amd64 matrix does not replace remaining promotion evidence, including fresh
 platform-specific and long-duration evidence required by the active plan.
+The v0.1.9 Linux arm64 archive checksum and static AArch64 ELF were independently verified, and
+the archive booted on the local Linux/arm64 Ubuntu 22.04 container runtime. This is an ABI/runtime
+preflight only: the available dedicated Ubuntu host is amd64 and no native Linux arm64 systemd/Compose
+clean host is currently available, so the required arm64 deployment matrix remains unfulfilled.
 Its short-lived root override
 uses `DAC_OVERRIDE` plus `FOWNER` only for the exclusive data-lock backup. Its Compose package keeps first installation pinned
 to tag+digest, while an explicitly prepared offline upgrade validates a root-owned tagged image
