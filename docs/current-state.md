@@ -57,6 +57,13 @@ preservation, and cleanup; the exact public archive plus pinned OCI image also p
 `v0.0.9→v0.1.9` Compose full upgrade and explicit recovery rollback. It remains a prerelease
 candidate: this amd64 matrix does not replace remaining promotion evidence, including fresh
 platform-specific and long-duration evidence required by the active plan.
+Its fixed Linux amd64 C8 candidate baseline was also remeasured from the exact `e1eedc4` detached
+checkout. Because the retained historical reference artifact was unavailable on that host, the
+approved `3c1e8e…` reference was recreated there under the same explicit loopback dashboard-port
+override. Both three-run artifacts passed independent audit (553 reference and 552 candidate resource
+samples), and the fail-closed comparator passed: RPS ratio `0.96445704`, p95 ratio `1.09745749`, p99
+ratio `1.09985146`, and error-rate delta `0`. This is C8 evidence for the immutable amd64 candidate,
+not arm64 deployment evidence or product promotion approval.
 The v0.1.9 Linux arm64 archive checksum and static AArch64 ELF were independently verified, and
 the archive booted on the local Linux/arm64 Ubuntu 22.04 container runtime. This is an ABI/runtime
 preflight only: the available dedicated Ubuntu host is amd64 and no native Linux arm64 systemd/Compose
