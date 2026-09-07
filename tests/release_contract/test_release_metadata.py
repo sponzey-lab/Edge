@@ -11,13 +11,14 @@ CANONICAL_REPOSITORY = "https://github.com/sponzey-lab/Sponzey-Edge"
 
 
 class ReleaseMetadataContractTest(unittest.TestCase):
-    def test_current_systemd_upgrade_candidate_metadata_is_v018_before_tagging(self) -> None:
+    def test_current_v019_candidate_records_public_v018_ineligibility(self) -> None:
         manifest = (ROOT / "apps" / "edge-proxy" / "Cargo.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "0.1.8"', manifest)
+        self.assertIn('version = "0.1.9"', manifest)
         current_state = (ROOT / "docs" / "current-state.md").read_text(encoding="utf-8")
-        self.assertIn("v0.1.8 candidate metadata", current_state)
-        self.assertIn("but has no `v0.1.8` tag", current_state)
-        self.assertIn("or published artifact", current_state)
+        self.assertIn("The public `v0.1.8` prerelease", current_state)
+        self.assertIn("it is not eligible for promotion", current_state)
+        self.assertIn("A subsequent candidate must repeat the full same-identity Compose/systemd matrix", current_state)
+        self.assertIn("prospective `v0.1.9` candidate", current_state)
         self.assertIn("The `v0.1.0` tag is", current_state)
         self.assertIn("immutable but non-releasable", current_state)
 

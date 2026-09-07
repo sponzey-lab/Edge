@@ -945,6 +945,10 @@ pub mod snapshot_http {
         }
     }
 
+    pub(crate) fn is_retryable_poll_interruption(error: &io::Error) -> bool {
+        error.kind() == io::ErrorKind::Interrupted
+    }
+
     pub fn run_snapshot_http_proxy_mio(config: SnapshotProxyConfig) -> io::Result<()> {
         let std_listener = StdTcpListener::bind(config.listen)?;
         std_listener.set_nonblocking(true)?;
@@ -1117,14 +1121,19 @@ pub mod snapshot_http {
                 runtime.next_poll_timeout(Instant::now(), completed_limit),
                 runtime_commands.is_some(),
             );
-            poll.poll(
+            if let Err(error) = poll.poll(
                 &mut events,
                 if drain_deadline.is_some() {
                     Some(Duration::from_millis(10))
                 } else {
                     poll_timeout
                 },
-            )?;
+            ) {
+                if is_retryable_poll_interruption(&error) {
+                    continue;
+                }
+                return Err(error);
+            }
             let command_result = drain_runtime_commands_with_listeners(
                 &mut runtime_commands,
                 &mut snapshot,
@@ -2088,6 +2097,7 @@ pub mod snapshot_http {
                         self.reconcile_transport_payload_charges(connection_id, registry)?;
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                    Err(error) if is_retryable_poll_interruption(&error) => continue,
                     Err(error) => return Err(error),
                 }
             }
@@ -7707,10 +7717,11 @@ mod tests {
         build_selected_upstream_request, checked_wire_length, drain_runtime_commands,
         error_response_for_code, handle_runtime_command, handle_snapshot_http_proxy_connection,
         handle_snapshot_http_proxy_stream, handle_snapshot_http_proxy_stream_with_scheme,
-        host_for_route_match, initial_availability_snapshot, planned_selected_upstream_request_len,
-        run_snapshot_http_proxy_mio_for_test, runtime_command_channel, tunnel_flow_control,
-        tunnel_interest, tunnel_pressure_flow, BackpressureEvent, NoopHttp01ChallengeResponder,
-        ResourceAccountingEvent, RuntimeUpstreamSelector, SnapshotProxyConfig, TunnelFlowControl,
+        host_for_route_match, initial_availability_snapshot, is_retryable_poll_interruption,
+        planned_selected_upstream_request_len, run_snapshot_http_proxy_mio_for_test,
+        runtime_command_channel, tunnel_flow_control, tunnel_interest, tunnel_pressure_flow,
+        BackpressureEvent, NoopHttp01ChallengeResponder, ResourceAccountingEvent,
+        RuntimeUpstreamSelector, SnapshotProxyConfig, TunnelFlowControl,
     };
     use crate::upstream_response_framing::{HttpResponseFraming, ResponseFramingPhase};
     use edge_application::{Http01Token, Http01TokenStore};
@@ -9249,6 +9260,14 @@ mod tests {
         let mut current_snapshot = std::sync::Arc::new(snapshot());
         assert!(drain_runtime_commands(&mut commands, &mut current_snapshot));
         assert!(sender.join().unwrap().is_success());
+    }
+
+    #[test]
+    fn interrupted_event_loop_io_is_retryable_during_runtime_drain() {
+        let interrupted =
+            std::io::Error::new(std::io::ErrorKind::Interrupted, "signal interrupted poll");
+
+        assert!(is_retryable_poll_interruption(&interrupted));
     }
 
     #[test]

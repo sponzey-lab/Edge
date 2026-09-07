@@ -67,12 +67,21 @@ case "$command" in
     ;;
   drain-stop)
     [ "$#" -eq 0 ] || fail "drain-stop takes no arguments"
-    "$SYSTEMCTL" stop sponzey-edge.service
+    if ! "$SYSTEMCTL" stop sponzey-edge.service; then
+      if "$SYSTEMCTL" is-active --quiet sponzey-edge.service; then
+        fail "service remains active after stop"
+      fi
+      :
+    fi
     ;;
   start-ready)
     [ "$#" -eq 0 ] || fail "start-ready takes no arguments"
     "$SYSTEMCTL" start sponzey-edge.service
-    "$EDGE_PROXY" probe ready --admin-bind 127.0.0.1:9443
+    for attempt in $(seq 1 20); do
+      "$EDGE_PROXY" probe ready --admin-bind 127.0.0.1:9443 >/dev/null && exit 0
+      sleep 1
+    done
+    fail "service did not become ready"
     ;;
   rollback)
     [ "$#" -eq 4 ] && [ "$1" = "--backup-id" ] && [ "$3" = "--previous-artifact-digest" ] || fail "invalid rollback arguments"

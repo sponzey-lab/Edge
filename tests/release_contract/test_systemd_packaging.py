@@ -12,6 +12,7 @@ class SystemdPackagingContractTest(unittest.TestCase):
         cls.install = (ROOT / "packaging" / "systemd" / "install.sh").read_text(encoding="utf-8")
         cls.uninstall = (ROOT / "packaging" / "systemd" / "uninstall.sh").read_text(encoding="utf-8")
         cls.preflight = (ROOT / "packaging" / "systemd" / "preflight.sh").read_text(encoding="utf-8")
+        cls.upgrade_helper = (ROOT / "packaging" / "systemd" / "upgrade-helper").read_text(encoding="utf-8")
 
     def test_unit_runs_as_dedicated_user_with_hardened_filesystem(self) -> None:
         for required in [
@@ -50,6 +51,16 @@ class SystemdPackagingContractTest(unittest.TestCase):
         self.assertIn("127.0.0.1:9443", self.preflight)
         self.assertNotIn("systemctl enable", self.preflight)
         self.assertNotIn("install -", self.preflight)
+
+    def test_upgrade_stop_accepts_a_legacy_sigterm_exit_only_after_service_is_inactive(self) -> None:
+        self.assertIn('if ! "$SYSTEMCTL" stop sponzey-edge.service; then', self.upgrade_helper)
+        self.assertIn('if "$SYSTEMCTL" is-active --quiet sponzey-edge.service; then', self.upgrade_helper)
+        self.assertIn('fail "service remains active after stop"', self.upgrade_helper)
+
+    def test_upgrade_start_waits_with_a_bounded_readiness_probe(self) -> None:
+        self.assertIn('for attempt in $(seq 1 20); do', self.upgrade_helper)
+        self.assertIn('"$EDGE_PROXY" probe ready --admin-bind 127.0.0.1:9443 >/dev/null && exit 0', self.upgrade_helper)
+        self.assertIn('fail "service did not become ready"', self.upgrade_helper)
 
 
 if __name__ == "__main__":

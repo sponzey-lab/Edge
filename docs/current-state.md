@@ -1,6 +1,6 @@
 # Current Implementation State
 
-기준일: 2026-08-31
+기준일: 2026-09-07
 
 `scripts/` 아래의 로컬 테스트 helper, smoke runner, release evidence collector, memory
 profile wrapper는 삭제되었다. 이 문서에 남아 있는 해당 script 이름은 과거 Phase evidence를
@@ -41,9 +41,14 @@ The public `v0.1.6` prerelease corrects Compose rollback digest normalization an
 cleanup, but its systemd helper incorrectly rejects a conventional root-owned `0755` local artifact
 before an offline upgrade; it is not eligible for promotion. The public `v0.1.7` prerelease corrects
 that permission check, but its systemd helper rejects the adapter's explicit version argument before
-offline admission; it is not eligible for promotion. The current tree carries `v0.1.8 candidate metadata`,
-but has no `v0.1.8` tag or published artifact; its Linux archive workflow accepts either
-static or static-PIE `file` output before packaging. Its short-lived root override
+offline admission; it is not eligible for promotion. The public `v0.1.8` prerelease corrects the
+explicit-version admission contract and its Linux archive workflow accepts either static or static-PIE
+`file` output before packaging, but the Ubuntu 22.04 clean-host systemd upgrade exposed legacy
+non-zero stop handling, readiness-probe stdout, and listener-startup race defects; it is not eligible
+for promotion. A subsequent candidate must repeat the full same-identity Compose/systemd matrix.
+The current source declares the prospective `v0.1.9` candidate; it is not an artifact identity
+until its reviewed commit, tag, workflow publication, and fresh evidence exist.
+Its short-lived root override
 uses `DAC_OVERRIDE` plus `FOWNER` only for the exclusive data-lock backup. Its Compose package keeps first installation pinned
 to tag+digest, while an explicitly prepared offline upgrade validates a root-owned tagged image
 archive's OCI version and revision labels before using the admitted local tag; rollback normalizes
