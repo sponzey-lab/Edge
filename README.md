@@ -20,6 +20,12 @@ Build a predictable, memory-safe edge gateway that combines:
 Correctness, safety, operability, simplicity, and performance take priority over
 feature count.
 
+## Supported Release Platform
+
+The current product candidate is supported on Linux `amd64` only. A published
+Linux `arm64` artifact is unverified and unsupported until native Linux arm64
+Compose and systemd evidence is collected in a separately approved plan.
+
 ## Currently Supported Features
 
 ### Reverse Proxy And Routing

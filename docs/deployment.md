@@ -361,9 +361,11 @@ request-time environment override.
 
 Capacity planning must preserve file-descriptor headroom for listeners, upstreams, Admin, logs and
 test tooling. Before promoting a changed release candidate, run the source-bound full profile on
-the target OS/architecture. The accepted 2026-07-20 checkpoint covered macOS arm64 and native Linux
-x86_64, but any later tracked change requires fresh evidence. Do not lower scenario counts, raise
-checked-in ceilings, inject allocator environment settings, or reuse a stale report to force a pass.
+the supported target platform. The current product candidate supports Linux amd64 only; any arm64
+artifact is unverified and unsupported pending a separate native Linux arm64 plan. The accepted
+2026-07-20 checkpoint covered macOS arm64 and native Linux x86_64, but any later tracked change
+requires fresh evidence. Do not lower scenario counts, raise checked-in ceilings, inject allocator
+environment settings, or reuse a stale report to force a pass.
 
 ## Verified MVP Baseline
 

@@ -28,7 +28,7 @@ reviewer:
 ```text
 github_release_url:
 linux_amd64_archive_sha256:
-linux_arm64_archive_sha256:
+linux_arm64_archive_sha256_unverified_optional:
 sha256sums_sha256:
 spdx_sbom_sha256:
 ghcr_image_repository:
@@ -59,9 +59,7 @@ the placeholders with the candidate identity and outcomes:
   "certificate_automation_deferred": true,
   "matrix": [
     { "deployment": "compose", "platform": "linux-amd64", "status": "passed" },
-    { "deployment": "compose", "platform": "linux-arm64", "status": "passed" },
-    { "deployment": "systemd", "platform": "linux-amd64", "status": "passed" },
-    { "deployment": "systemd", "platform": "linux-arm64", "status": "passed" }
+    { "deployment": "systemd", "platform": "linux-amd64", "status": "passed" }
   ]
 }
 ```
@@ -117,8 +115,8 @@ secret_exclusion_review:
 ```
 
 Record each command, its result, the input configuration digest, and the final
-cleanup result. The Admin API must remain loopback-only. Compose evidence on one
-architecture does not prove the other.
+cleanup result. The Admin API must remain loopback-only. This candidate supports
+Linux amd64 only; a published arm64 artifact is unverified and not a substitute.
 
 ## Systemd Clean-Host Evidence
 
@@ -179,7 +177,7 @@ p95/p99 increase, and no median error-rate increase.
 manual_or_private_pki_only: true
 certificate_automation_deferred: true
 official_clean_host_evidence_pending:
-unsupported_platforms: macOS, Windows
+unsupported_platforms: macOS, Windows, Linux arm64
 ```
 
 ## Review Sign-Off

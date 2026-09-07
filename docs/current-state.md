@@ -56,24 +56,26 @@ to that commit. On the dedicated Ubuntu 22.04 x86_64 host, the exact public arch
 preservation, and cleanup; the exact public archive plus pinned OCI image also passed the
 `v0.0.9→v0.1.9` Compose full upgrade and explicit recovery rollback. It remains a prerelease
 candidate: this amd64 matrix does not replace remaining promotion evidence, including fresh
-platform-specific and long-duration evidence required by the active plan.
+same-identity long-duration and support evidence required by the active plan. The current product
+candidate scope officially supports Linux amd64 only.
 Its fixed Linux amd64 C8 candidate baseline was also remeasured from the exact `e1eedc4` detached
 checkout. Because the retained historical reference artifact was unavailable on that host, the
 approved `3c1e8e…` reference was recreated there under the same explicit loopback dashboard-port
 override. Both three-run artifacts passed independent audit (553 reference and 552 candidate resource
 samples), and the fail-closed comparator passed: RPS ratio `0.96445704`, p95 ratio `1.09745749`, p99
 ratio `1.09985146`, and error-rate delta `0`. This is C8 evidence for the immutable amd64 candidate,
-not arm64 deployment evidence or product promotion approval.
+not product promotion approval.
 The same exact amd64 candidate completed a fixed-host 30-minute soak as artifact
 `2026-09-07T07-35-03-332Z-2303534`: independent audit accepted 908 resource samples, 15,315.3605
 RPS, p95 `0.86977ms`, p99 `1.012235ms`, zero errors, and memory first/last values of 3,137,339 and
 3,461,349 bytes. The unrelated service occupying dashboard port 3000 remained untouched; the
 performance contract's explicit loopback override used port 3301. This is candidate amd64 soak
-evidence only and does not fulfill the native Linux arm64 deployment matrix.
+evidence only and does not itself fulfill promotion requirements.
 The v0.1.9 Linux arm64 archive checksum and static AArch64 ELF were independently verified, and
 the archive booted on the local Linux/arm64 Ubuntu 22.04 container runtime. This is an ABI/runtime
 preflight only: the available dedicated Ubuntu host is amd64 and no native Linux arm64 systemd/Compose
-clean host is currently available, so the required arm64 deployment matrix remains unfulfilled.
+clean host is currently available. Linux arm64 is unverified and unsupported for the current
+amd64-only product candidate; native arm64 deployment validation is deferred to a later plan.
 Its short-lived root override
 uses `DAC_OVERRIDE` plus `FOWNER` only for the exclusive data-lock backup. Its Compose package keeps first installation pinned
 to tag+digest, while an explicitly prepared offline upgrade validates a root-owned tagged image

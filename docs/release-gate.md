@@ -12,9 +12,11 @@ External ACME or Let’s Encrypt issuance and renewal automation is deferred unt
 the user explicitly reopens that scope. It is not a release prerequisite and
 this document intentionally contains no command for it.
 
-Official support also remains unclaimed until the same candidate has clean-host
-Linux evidence for both Docker Compose and systemd. A containerized or macOS
-source check is useful evidence, but is not a substitute for that matrix.
+Official support is Linux `amd64` only and remains unclaimed until the same
+candidate has clean-host Linux amd64 evidence for both Docker Compose and
+systemd. A containerized or macOS source check is useful evidence, but is not a
+substitute for that matrix. An arm64 archive may be published, but is unverified
+and unsupported until a separately approved native Linux arm64 matrix exists.
 
 ## Source gate
 
@@ -55,9 +57,11 @@ its immutable GHCR digest. It is not a product release or supported deployment
 claim. Record and cross-check all of the following against that candidate:
 
 - GitHub Release URL and tag-to-commit identity
-- Linux `amd64` and `arm64` archive checksums and SPDX SBOM checksum
-- static-link verification for each Linux archive binary; the archive must run
-  on the supported clean host without relying on that host's glibc version
+- Linux `amd64` archive checksum and SPDX SBOM checksum
+- static-link verification for the supported amd64 archive; it must run on the
+  supported clean host without relying on that host's glibc version
+- any published arm64 archive checksum, explicitly marked unverified and
+  unsupported rather than used as promotion evidence
 - GHCR repository, immutable multi-architecture manifest digest, and OCI
   revision/version labels
 - an anonymous pull of the exact digest before the prerelease is created
@@ -75,8 +79,8 @@ image—to collect the following evidence.
 
 | Deployment | Required clean-host evidence |
 | --- | --- |
-| Docker Compose, Linux `amd64` and `arm64` | install, readiness and proxy smoke, loopback-only Admin API, restart, upgrade, forced-failure rollback, data preservation, cleanup |
-| systemd, Linux `amd64` and `arm64` | archive checksum, install/start/probe, SIGTERM/restart, uninstall, upgrade, forced-failure rollback, data preservation, cleanup |
+| Docker Compose, Linux `amd64` | install, readiness and proxy smoke, loopback-only Admin API, restart, upgrade, forced-failure rollback, data preservation, cleanup |
+| systemd, Linux `amd64` | archive checksum, install/start/probe, SIGTERM/restart, uninstall, upgrade, forced-failure rollback, data preservation, cleanup |
 
 The systemd host must run systemd as PID 1. Compose and systemd evidence must
 also confirm non-root operation, read-only root filesystem where packaged,

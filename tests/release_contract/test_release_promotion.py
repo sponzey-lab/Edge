@@ -27,7 +27,7 @@ class ReleasePromotionContractTest(unittest.TestCase):
             "matrix": [
                 {"deployment": deployment, "platform": platform, "status": "passed"}
                 for deployment in ("compose", "systemd")
-                for platform in ("linux-amd64", "linux-arm64")
+                for platform in ("linux-amd64",)
             ],
         }
 
@@ -56,11 +56,19 @@ class ReleasePromotionContractTest(unittest.TestCase):
     def test_accepts_complete_same_identity_matrix_evidence(self) -> None:
         result = self.validate(self.evidence())
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('"matrix_cells":4', result.stdout)
+        self.assertIn('"matrix_cells":2', result.stdout)
 
     def test_rejects_missing_matrix_cell(self) -> None:
         evidence = self.evidence()
         evidence["matrix"] = evidence["matrix"][:-1]  # type: ignore[index]
+        result = self.validate(evidence)
+        self.assertIn("PROMOTION_MATRIX_INCOMPLETE", result.stderr)
+
+    def test_rejects_unsupported_arm64_matrix_cell(self) -> None:
+        evidence = self.evidence()
+        evidence["matrix"].append(  # type: ignore[union-attr]
+            {"deployment": "compose", "platform": "linux-arm64", "status": "passed"}
+        )
         result = self.validate(evidence)
         self.assertIn("PROMOTION_MATRIX_INCOMPLETE", result.stderr)
 
@@ -91,6 +99,8 @@ class ReleasePromotionContractTest(unittest.TestCase):
         self.assertIn("promote-release.yml", release_gate)
         self.assertIn("promotion.json", template)
         self.assertIn("certificate_automation_deferred", template)
+        self.assertIn("Official support is Linux `amd64` only", release_gate)
+        self.assertIn("Linux amd64 only", template)
 
 
 if __name__ == "__main__":

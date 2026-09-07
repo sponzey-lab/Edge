@@ -17,6 +17,6 @@ or mutate the product runtime.
 | `test_release_assembly.py` | Verifies deterministic release-asset assembly contracts. | Uses isolated temporary artifact fixtures. |
 | `test_release_manifest.py` | Verifies release-manifest validation contracts. | Uses isolated temporary artifact fixtures. |
 | `test_release_metadata.py` | Verifies tag, repository, and package metadata validation. | Reads repository metadata only. |
-| `test_release_promotion.py` | Verifies prerelease candidate and evidence-validated product-promotion contracts. | Uses isolated JSON evidence fixtures and reads workflow/document source only. |
+| `test_release_promotion.py` | Verifies prerelease candidate, Linux amd64-only matrix, and evidence-validated product-promotion contracts. | Uses isolated JSON evidence fixtures and reads workflow/document source only. |
 | `test_systemd_packaging.py` | Verifies systemd package contents and operational script contracts. | Reads packaging source only. |
 | `test_upgrade_helper_packaging.py` | Verifies shared upgrade-helper packaging contracts. | Reads packaging source only. |

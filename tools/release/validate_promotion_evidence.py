@@ -13,9 +13,7 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 IMAGE = re.compile(r"^ghcr\.io/sponzey-lab/sponzey-edge:v[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$")
 MATRIX = {
     ("compose", "linux-amd64"),
-    ("compose", "linux-arm64"),
     ("systemd", "linux-amd64"),
-    ("systemd", "linux-arm64"),
 }
 
 
@@ -56,7 +54,7 @@ def validate(evidence_path: Path, tag: str, commit: str, image: str) -> dict[str
             fail("PROMOTION_MATRIX_INCOMPLETE", "matrix cell identity is invalid")
         cells.add((deployment, platform))
     if cells != MATRIX or len(matrix) != len(MATRIX):
-        fail("PROMOTION_MATRIX_INCOMPLETE", "matrix must contain each Compose/systemd Linux architecture once")
+        fail("PROMOTION_MATRIX_INCOMPLETE", "matrix must contain each supported Compose/systemd Linux amd64 cell once")
     return {"matrix_cells": len(cells), "tag": tag}
 
 
