@@ -105,8 +105,8 @@ services:
     environment:
       NEXTCLOUD_ADMIN_USER: test-admin
       NEXTCLOUD_ADMIN_PASSWORD: ${SPONZEY_NEXTCLOUD_E2E_ADMIN_PASSWORD:-test-only-non-production-password}
-      NEXTCLOUD_TRUSTED_DOMAINS: nextcloud.test
-      OVERWRITEHOST: nextcloud.test
+      NEXTCLOUD_TRUSTED_DOMAINS: nextcloud.test localhost 127.0.0.1
+      OVERWRITEHOST: 127.0.0.1:${SPONZEY_NEXTCLOUD_EDGE_PORT:-18080}
       OVERWRITEPROTOCOL: http
       SQLITE_DATABASE: nextcloud
     networks:

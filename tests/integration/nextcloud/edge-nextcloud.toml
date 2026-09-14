@@ -28,7 +28,7 @@ url = "http://172.31.0.3:80"
 
 [[routes]]
 name = "nextcloud-through-edge"
-hosts = ["nextcloud.test"]
+hosts = ["nextcloud.test", "localhost", "127.0.0.1"]
 paths = ["/"]
 service = "nextcloud"
 priority = 0

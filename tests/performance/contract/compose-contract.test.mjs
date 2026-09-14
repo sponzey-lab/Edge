@@ -125,7 +125,10 @@ test("reusable Nextcloud E2E Compose profile isolates Edge and persists both ser
     "utf8",
   );
   assert.match(routeConfig, /url = "http:\/\/172\.31\.0\.3:80"/);
-  assert.match(routeConfig, /hosts = \["nextcloud\.test"\]/);
+  assert.match(routeConfig, /hosts = \["nextcloud\.test", "localhost", "127\.0\.0\.1"\]/);
+  assert.match(nextcloud.environment.NEXTCLOUD_TRUSTED_DOMAINS, /nextcloud\.test localhost 127\.0\.0\.1/);
+  assert.equal(nextcloud.environment.OVERWRITEHOST, "127.0.0.1:18080");
+  assert.equal(nextcloud.environment.OVERWRITEPROTOCOL, "http");
 });
 
 test("edge-perf mounts a non-secret HTTP route config with a stable literal upstream", () => {

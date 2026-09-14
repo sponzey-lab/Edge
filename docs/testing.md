@@ -61,8 +61,10 @@ docker compose -f docker-compose.test.yml down
 The same `docker-compose.test.yml` also owns the persistent `nextcloud-e2e`
 profile. It creates one private Nextcloud network, a loopback-only Edge listener,
 and named volumes for both Edge state and Nextcloud state. It does not expose the
-Admin API or Nextcloud directly. The fixed route accepts `Host: nextcloud.test`
-and forwards to Nextcloud's private Compose address.
+Admin API or Nextcloud directly. The fixed route accepts `nextcloud.test`,
+`localhost`, and `127.0.0.1`, then forwards to Nextcloud's private Compose address.
+Nextcloud's generated login URLs are pinned to the loopback Edge address, so no
+`nextcloud.test` DNS or hosts-file entry is needed.
 
 Build and initialize the stack once. The default listener is `127.0.0.1:18080`;
 set `SPONZEY_NEXTCLOUD_EDGE_PORT` only when that local port is occupied.

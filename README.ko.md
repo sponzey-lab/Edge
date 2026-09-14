@@ -147,8 +147,9 @@ docker compose -f docker-compose.test.yml exec edge-test \
 ### 재사용 가능한 Nextcloud 통합 검증
 
 같은 `docker-compose.test.yml`의 `nextcloud-e2e` 프로필은
-`nextcloud.test` 요청을 loopback 전용 Edge listener를 거쳐 Nextcloud로 전달합니다. 최초 한 번만
-초기화하고, 이후에는 같은 서비스와 named volume을 재사용합니다.
+`nextcloud.test`와 로컬 브라우저 주소인 `localhost`, `127.0.0.1` 요청을 loopback 전용 Edge
+listener를 거쳐 Nextcloud로 전달합니다. 최초 한 번만 초기화하고, 이후에는 같은 서비스와 named
+volume을 재사용합니다.
 
 ```bash
 docker compose --profile nextcloud-e2e -f docker-compose.test.yml build edge-nextcloud

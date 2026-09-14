@@ -160,8 +160,9 @@ The test container exposes no host port and does not mount runtime data or secre
 ### Reusable Nextcloud Integration
 
 The same test Compose file also has a persistent `nextcloud-e2e` profile that
-routes `nextcloud.test` through a loopback-only Edge listener. Initialize it once,
-then run the verification without creating a new Compose stack:
+routes `nextcloud.test` (and the local browser hosts `localhost` and `127.0.0.1`)
+through a loopback-only Edge listener. Initialize it once, then run the verification
+without creating a new Compose stack:
 
 ```bash
 docker compose --profile nextcloud-e2e -f docker-compose.test.yml build edge-nextcloud
