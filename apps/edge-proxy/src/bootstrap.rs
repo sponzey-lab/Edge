@@ -83,6 +83,7 @@ pub fn ensure_data_layout(data_dir: &str) -> io::Result<()> {
         "secrets",
         "logs",
         "backups",
+        "support",
     ] {
         std::fs::create_dir_all(root.join(relative))?;
     }
@@ -124,6 +125,7 @@ mod tests {
         assert!(root.join("secrets").is_dir());
         assert!(root.join("logs").is_dir());
         assert!(root.join("backups").is_dir());
+        assert!(root.join("support").is_dir());
 
         std::fs::remove_dir_all(root).unwrap();
     }
