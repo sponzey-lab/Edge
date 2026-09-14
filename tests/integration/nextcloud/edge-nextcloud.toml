@@ -1,0 +1,34 @@
+schema_version = 1
+
+[admin]
+bind = "127.0.0.1:9443"
+enabled = true
+
+[logging]
+mode = "product"
+
+[storage]
+data_dir = "/var/lib/sponzey-edge/data"
+
+[runtime]
+max_connections = 1024
+max_inflight_payload_bytes = 100663296
+upstream_read_timeout_ms = 30000
+
+[[listeners]]
+name = "http"
+bind = "0.0.0.0:8080"
+protocol = "http"
+
+[[services]]
+name = "nextcloud"
+
+[[services.upstreams]]
+url = "http://172.31.0.3:80"
+
+[[routes]]
+name = "nextcloud-through-edge"
+hosts = ["nextcloud.test"]
+paths = ["/"]
+service = "nextcloud"
+priority = 0

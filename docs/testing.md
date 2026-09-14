@@ -56,6 +56,38 @@ docker compose -f docker-compose.test.yml down
 - A container pass proves the Linux container boundary only. Platform-specific macOS and native
   Linux memory/release evidence remains a separate release requirement.
 
+## Reusable Nextcloud Through Edge Integration
+
+The same `docker-compose.test.yml` also owns the persistent `nextcloud-e2e`
+profile. It creates one private Nextcloud network, a loopback-only Edge listener,
+and named volumes for both Edge state and Nextcloud state. It does not expose the
+Admin API or Nextcloud directly. The fixed route accepts `Host: nextcloud.test`
+and forwards to Nextcloud's private Compose address.
+
+Build and initialize the stack once. The default listener is `127.0.0.1:18080`;
+set `SPONZEY_NEXTCLOUD_EDGE_PORT` only when that local port is occupied.
+
+```bash
+docker compose --profile nextcloud-e2e -f docker-compose.test.yml build edge-nextcloud
+docker compose --profile nextcloud-e2e -f docker-compose.test.yml up -d --wait
+node tests/integration/nextcloud/verify.mjs
+```
+
+Later checks reuse the same services and named volumes; do not add another
+Compose file or run `down --volumes` unless an intentionally clean Nextcloud
+installation is required:
+
+```bash
+docker compose --profile nextcloud-e2e -f docker-compose.test.yml up -d --wait
+node tests/integration/nextcloud/verify.mjs
+```
+
+Use `stop`/`start` to retain the stack. `down` removes containers and the private
+network but keeps the named data volumes; `down --volumes` is the explicit reset.
+The profile uses a test-only default administrator password solely for its
+loopback-only disposable environment. A local `SPONZEY_NEXTCLOUD_E2E_ADMIN_PASSWORD`
+value may replace it; never use a production credential.
+
 ## Release Performance Test Environment
 
 `edge-perf`, `node-upstream`, and `load-generator` use the `performance` Compose profile. They are

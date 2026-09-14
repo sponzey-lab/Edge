@@ -157,6 +157,21 @@ docker compose -f docker-compose.test.yml exec edge-test \
 The test container exposes no host port and does not mount runtime data or secrets. See
 [`docs/testing.md`](docs/testing.md) for focused tests, lifecycle commands, and safety boundaries.
 
+### Reusable Nextcloud Integration
+
+The same test Compose file also has a persistent `nextcloud-e2e` profile that
+routes `nextcloud.test` through a loopback-only Edge listener. Initialize it once,
+then run the verification without creating a new Compose stack:
+
+```bash
+docker compose --profile nextcloud-e2e -f docker-compose.test.yml build edge-nextcloud
+docker compose --profile nextcloud-e2e -f docker-compose.test.yml up -d --wait
+node tests/integration/nextcloud/verify.mjs
+```
+
+See [`docs/testing.md`](docs/testing.md#reusable-nextcloud-through-edge-integration)
+for port override, persistence, and explicit reset instructions.
+
 ### Release Performance Test Environment
 
 The long-lived Compose performance boundary is separate from `edge-test`: it builds the production

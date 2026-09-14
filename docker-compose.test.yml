@@ -97,17 +97,82 @@ services:
         target: admin-credential.secret
     logging: *performance_logging
 
+  nextcloud:
+    profiles: ["nextcloud-e2e"]
+    image: nextcloud:30-apache@sha256:4ba4dff13ce3d461180b3b7984207a88ccdd04e9021933ad27336d7427959432
+    init: true
+    restart: unless-stopped
+    environment:
+      NEXTCLOUD_ADMIN_USER: test-admin
+      NEXTCLOUD_ADMIN_PASSWORD: ${SPONZEY_NEXTCLOUD_E2E_ADMIN_PASSWORD:-test-only-non-production-password}
+      NEXTCLOUD_TRUSTED_DOMAINS: nextcloud.test
+      OVERWRITEHOST: nextcloud.test
+      OVERWRITEPROTOCOL: http
+      SQLITE_DATABASE: nextcloud
+    networks:
+      nextcloud-e2e-net:
+        ipv4_address: 172.31.0.3
+    volumes:
+      - nextcloud-e2e-html:/var/www/html
+    healthcheck:
+      test: ["CMD-SHELL", "php -r '$$status = @file_get_contents(\"http://127.0.0.1/status.php\"); exit($$status === false ? 1 : 0);'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    logging: *performance_logging
+
+  edge-nextcloud:
+    profiles: ["nextcloud-e2e"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    read_only: true
+    restart: unless-stopped
+    depends_on:
+      nextcloud:
+        condition: service_healthy
+    environment:
+      SPONZEY_DATA_DIR: /var/lib/sponzey-edge/data
+      SPONZEY_CONFIG_FILE: /etc/sponzey-edge/current.toml
+      SPONZEY_ADMIN_BIND: 127.0.0.1:9443
+      SPONZEY_LOG_MODE: product
+    networks:
+      - nextcloud-e2e-net
+    ports:
+      - "127.0.0.1:${SPONZEY_NEXTCLOUD_EDGE_PORT:-18080}:8080"
+    volumes:
+      - ./tests/integration/nextcloud/edge-nextcloud.toml:/etc/sponzey-edge/current.toml:ro
+      # The adjacent lock belongs beside data, so mount the full owned state root.
+      - edge-nextcloud-state:/var/lib/sponzey-edge
+    tmpfs:
+      - /tmp:mode=1777,noexec,nosuid,size=16m
+    healthcheck:
+      test: ["CMD", "edge-proxy", "probe", "ready", "--admin-bind", "127.0.0.1:9443"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    logging: *performance_logging
+
 volumes:
   cargo-registry:
   cargo-git:
   cargo-target:
   edge-perf-data:
+  edge-nextcloud-state:
+  nextcloud-e2e-html:
 
 networks:
   performance-net:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+  nextcloud-e2e-net:
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
 
 secrets:
   performance-admin-credential:

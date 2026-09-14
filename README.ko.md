@@ -144,6 +144,21 @@ docker compose -f docker-compose.test.yml exec edge-test \
 테스트 컨테이너는 host port를 공개하지 않고 운영 data나 secret을 mount하지 않습니다. 집중
 테스트, 중지·재시작 및 cache 초기화 방법은 [`docs/testing.md`](docs/testing.md)를 참고하십시오.
 
+### 재사용 가능한 Nextcloud 통합 검증
+
+같은 `docker-compose.test.yml`의 `nextcloud-e2e` 프로필은
+`nextcloud.test` 요청을 loopback 전용 Edge listener를 거쳐 Nextcloud로 전달합니다. 최초 한 번만
+초기화하고, 이후에는 같은 서비스와 named volume을 재사용합니다.
+
+```bash
+docker compose --profile nextcloud-e2e -f docker-compose.test.yml build edge-nextcloud
+docker compose --profile nextcloud-e2e -f docker-compose.test.yml up -d --wait
+node tests/integration/nextcloud/verify.mjs
+```
+
+포트 변경, 데이터 보존, 명시적 초기화 방법은
+[`docs/testing.md`](docs/testing.md#reusable-nextcloud-through-edge-integration)를 참고하세요.
+
 ### Release 성능 테스트 환경
 
 지속 Compose 성능 경계는 `edge-test`와 분리됩니다. production `edge-perf` 이미지를 빌드하고,

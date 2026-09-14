@@ -10,13 +10,13 @@ const repositoryRoot = path.resolve(
   "../../..",
 );
 
-function composeConfig(environment = {}) {
+function composeConfig(profile = "performance", environment = {}) {
   const output = execFileSync(
     "docker",
     [
       "compose",
       "--profile",
-      "performance",
+      profile,
       "-f",
       "docker-compose.test.yml",
       "config",
@@ -88,13 +88,44 @@ test("performance Compose declares the four-service measurement boundary", () =>
 });
 
 test("performance Compose permits an explicit loopback dashboard host-port override", () => {
-  const config = composeConfig({ SPONZEY_PERFORMANCE_DASHBOARD_PORT: "3100" });
+  const config = composeConfig("performance", { SPONZEY_PERFORMANCE_DASHBOARD_PORT: "3100" });
   const [dashboardPort] = config.services["node-upstream"].ports;
 
   assert.equal(dashboardPort.target, 3000);
   assert.equal(dashboardPort.published, "3100");
   assert.equal(dashboardPort.protocol, "tcp");
   assert.equal(dashboardPort.host_ip, "127.0.0.1");
+});
+
+test("reusable Nextcloud E2E Compose profile isolates Edge and persists both service states", () => {
+  const config = composeConfig("nextcloud-e2e", { SPONZEY_NEXTCLOUD_EDGE_PORT: "18080" });
+
+  assert.deepEqual(
+    Object.keys(config.services).sort(),
+    ["edge-nextcloud", "edge-test", "nextcloud"],
+  );
+  const edge = config.services["edge-nextcloud"];
+  const nextcloud = config.services.nextcloud;
+  assert.equal(edge.build.dockerfile, "Dockerfile");
+  assert.match(nextcloud.image, /nextcloud:30-apache@sha256:/);
+  assert.equal(edge.ports.length, 1);
+  assert.deepEqual(edge.ports[0], {
+    mode: "ingress", target: 8080, published: "18080", protocol: "tcp", host_ip: "127.0.0.1",
+  });
+  assert.equal(edge.read_only, true);
+  assert.equal(JSON.stringify([edge, nextcloud]).includes("docker.sock"), false);
+  assert.ok(edge.healthcheck);
+  assert.ok(nextcloud.healthcheck);
+  assert.ok(edge.volumes.some((volume) => volume.target === "/var/lib/sponzey-edge" && !volume.read_only));
+  assert.ok(nextcloud.volumes.some((volume) => volume.target === "/var/www/html" && !volume.read_only));
+  assert.equal(config.networks["nextcloud-e2e-net"].ipam.config[0].subnet, "172.31.0.0/24");
+
+  const routeConfig = readFileSync(
+    path.join(repositoryRoot, "tests/integration/nextcloud/edge-nextcloud.toml"),
+    "utf8",
+  );
+  assert.match(routeConfig, /url = "http:\/\/172\.31\.0\.3:80"/);
+  assert.match(routeConfig, /hosts = \["nextcloud\.test"\]/);
 });
 
 test("edge-perf mounts a non-secret HTTP route config with a stable literal upstream", () => {
